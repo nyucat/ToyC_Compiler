@@ -1,3 +1,20 @@
+# 构建产物
+build/
+out/
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.db-*
+
+# 临时文件
+*.pdb
+*.ilk
+*.obj
+test_ir_out*.txt
+vsinfo.json
+
+# 课程文档本地副本（按需保留）
 成员B.md
 pdf_extract.txt
 ToyC编译器项目四人分工方案.pdf
