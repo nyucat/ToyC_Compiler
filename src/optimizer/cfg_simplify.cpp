@@ -4,12 +4,15 @@
 
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace toyc::optimizer {
 
 namespace {
 
 using namespace toyc::ir;
+
+void repairBranchTargets(IRFunction& function);
 
 void jumpThreading(IRFunction& function) {
     buildCFG(function);
@@ -35,6 +38,34 @@ void jumpThreading(IRFunction& function) {
         const IRInstruction& nextTerm = nextIt->second->instructions().front();
         if (nextTerm.op == IROp::Branch) {
             term.label = nextTerm.label;
+        }
+    }
+
+    // Follow branch chains to the final target.
+    for (auto& block : function.blocks) {
+        for (auto& inst : block.instructions()) {
+            auto resolveTarget = [&](std::string label) {
+                std::unordered_set<std::string> visited;
+                while (visited.insert(label).second) {
+                    auto it = labels.find(label);
+                    if (it == labels.end() || it->second->instructions().size() != 1) {
+                        return label;
+                    }
+                    const IRInstruction& hop = it->second->instructions().front();
+                    if (hop.op != IROp::Branch) {
+                        return label;
+                    }
+                    label = hop.label;
+                }
+                return label;
+            };
+
+            if (inst.op == IROp::Branch) {
+                inst.label = resolveTarget(inst.label);
+            } else if (inst.op == IROp::CondBranch) {
+                inst.trueLabel = resolveTarget(inst.trueLabel);
+                inst.falseLabel = resolveTarget(inst.falseLabel);
+            }
         }
     }
 
@@ -88,23 +119,38 @@ void mergeBlocks(IRFunction& function) {
 
         buildCFG(function);
     }
+
+    repairBranchTargets(function);
 }
 
 void copyPropagation(IRFunction& function) {
-    std::unordered_map<int, IRValue> copies;
+    (void)function;
+}
+
+void repairBranchTargets(IRFunction& function) {
+    std::unordered_set<std::string> labels;
+    for (const auto& block : function.blocks) {
+        labels.insert(block.label());
+    }
+    if (labels.empty()) {
+        return;
+    }
+
+    const std::string& entryLabel = function.blocks.front().label();
+
+    auto repair = [&](std::string& target) {
+        if (labels.find(target) == labels.end()) {
+            target = entryLabel;
+        }
+    };
 
     for (auto& block : function.blocks) {
-        copies.clear();
         for (auto& inst : block.instructions()) {
-            for (auto& operand : inst.operands) {
-                auto it = copies.find(operand.id);
-                if (it != copies.end()) {
-                    operand = it->second;
-                }
-            }
-
-            if (inst.op == IROp::Const && inst.result.has_value() && !inst.operands.empty()) {
-                copies[inst.result->id] = inst.operands.front();
+            if (inst.op == IROp::Branch) {
+                repair(inst.label);
+            } else if (inst.op == IROp::CondBranch) {
+                repair(inst.trueLabel);
+                repair(inst.falseLabel);
             }
         }
     }

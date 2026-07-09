@@ -49,6 +49,18 @@ void emitSpAdjust(int delta, std::vector<RISCVInstruction>& insts) {
     insts.push_back(RISCVInstruction::makeADD(Reg::SP, Reg::SP, Reg::T6));
 }
 
+std::string localBlockLabel(const std::string& label) {
+    std::string out = ".L";
+    for (char ch : label) {
+        if (ch == '.') {
+            out += '_';
+        } else {
+            out += ch;
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 CodeGenerator::CodeGenerator(bool optimize) : optimize_(optimize) {}
@@ -88,7 +100,7 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
     RegMapping regMap = regAlloc.allocate(func, frame, optimize_);
     
     std::vector<RISCVInstruction> insts;
-    exitLabel_ = func.name + "_exit";
+    exitLabel_ = localBlockLabel(func.name + "_exit");
     
     out << "    .globl " << func.name << "\n";
     insts.push_back(RISCVInstruction::makeLABEL(func.name));
@@ -205,7 +217,7 @@ void CodeGenerator::generateBasicBlock(
     std::vector<RISCVInstruction>& insts
 ) {
     (void)frame;
-    insts.push_back(RISCVInstruction::makeLABEL(block.label()));
+    insts.push_back(RISCVInstruction::makeLABEL(localBlockLabel(block.label())));
     
     for (const auto& irInst : block.instructions()) {
         auto translated = translateInstruction(irInst, frame, regMap);
@@ -451,15 +463,15 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
         }
         
         case toyc::ir::IROp::Branch: {
-            result.push_back(RISCVInstruction::makeJ(inst.label));
+            result.push_back(RISCVInstruction::makeJ(localBlockLabel(inst.label)));
             break;
         }
         
         case toyc::ir::IROp::CondBranch: {
             if (!inst.operands.empty()) {
                 int cond = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
-                result.push_back(RISCVInstruction::makeBNE(cond, Reg::ZERO, inst.trueLabel));
-                result.push_back(RISCVInstruction::makeJ(inst.falseLabel));
+                result.push_back(RISCVInstruction::makeBNE(cond, Reg::ZERO, localBlockLabel(inst.trueLabel)));
+                result.push_back(RISCVInstruction::makeJ(localBlockLabel(inst.falseLabel)));
             }
             break;
         }
