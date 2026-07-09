@@ -92,7 +92,6 @@ void CodeGenerator::generateEpilogue(
     const FrameInfo& frame,
     std::vector<RISCVInstruction>& insts
 ) {
-    (void)func;
     int idx = static_cast<int>(frame.savedRegOffsets.size()) - 1;
     for (auto it = frame.usedSavedRegs.rbegin(); it != frame.usedSavedRegs.rend(); ++it) {
         insts.push_back(RISCVInstruction::makeLW(*it, frame.savedRegOffsets[idx], Reg::SP));
@@ -107,7 +106,12 @@ void CodeGenerator::generateEpilogue(
         insts.push_back(RISCVInstruction::makeADDI(Reg::SP, Reg::SP, frame.frameSize));
     }
     
-    insts.push_back(RISCVInstruction::makeRET());
+    if (func.name == "main") {
+        insts.push_back(RISCVInstruction::makeLI(Reg::A7, 93));
+        insts.push_back(RISCVInstruction(RISCVOp::ECALL));
+    } else {
+        insts.push_back(RISCVInstruction::makeRET());
+    }
 }
 
 int CodeGenerator::getRegOrLoadToTmp(
