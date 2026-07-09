@@ -49,6 +49,7 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
     
     std::vector<RISCVInstruction> insts;
     
+    out << "    .globl " << func.name << "\n";
     insts.push_back(RISCVInstruction::makeLABEL(func.name));
     
     generatePrologue(func, frame, insts);
