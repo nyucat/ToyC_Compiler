@@ -178,11 +178,12 @@ void IRBuilder::buildStatement(const ast::StmtAST& stmt) {
     if (const auto* ifStmt = dynamic_cast<const ast::IfStmtAST*>(&stmt)) {
         IRValue cond = buildExpr(ifStmt->condition());
         const std::string thenLabel = newBlock("if.then");
-        const std::string mergeLabel = newBlock("if.end");
         const std::string elseLabel =
-            ifStmt->elseBranch() != nullptr ? newBlock("if.else") : mergeLabel;
+            ifStmt->elseBranch() != nullptr ? newBlock("if.else") : std::string();
+        const std::string mergeLabel = newBlock("if.end");
+        const std::string falseLabel = elseLabel.empty() ? mergeLabel : elseLabel;
 
-        emitCondBranch(cond, thenLabel, elseLabel);
+        emitCondBranch(cond, thenLabel, falseLabel);
 
         setInsertPoint(thenLabel);
         buildStatement(ifStmt->thenBranch());
@@ -190,7 +191,7 @@ void IRBuilder::buildStatement(const ast::StmtAST& stmt) {
             emitBranch(mergeLabel);
         }
 
-        if (ifStmt->elseBranch() != nullptr) {
+        if (!elseLabel.empty()) {
             setInsertPoint(elseLabel);
             buildStatement(*ifStmt->elseBranch());
             if (!currentBlock().isTerminated()) {

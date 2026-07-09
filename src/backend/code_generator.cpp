@@ -1,6 +1,10 @@
 #include "backend/code_generator.h"
 
+#include "ir/basic_block.h"
+
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace toyc::backend {
 
@@ -90,9 +94,26 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
     insts.push_back(RISCVInstruction::makeLABEL(func.name));
     
     generatePrologue(func, frame, insts);
-    
+
+    toyc::ir::IRFunction funcCopy = func;
+    const std::vector<toyc::ir::BasicBlock*> orderedBlocks = toyc::ir::reversePostOrder(funcCopy);
+    std::unordered_map<std::string, const toyc::ir::BasicBlock*> blockByLabel;
     for (const auto& block : func.blocks) {
-        generateBasicBlock(block, frame, regMap, insts);
+        blockByLabel.emplace(block.label(), &block);
+    }
+
+    std::unordered_set<std::string> emitted;
+    for (const toyc::ir::BasicBlock* blockPtr : orderedBlocks) {
+        const auto it = blockByLabel.find(blockPtr->label());
+        if (it != blockByLabel.end()) {
+            generateBasicBlock(*it->second, frame, regMap, insts);
+            emitted.insert(blockPtr->label());
+        }
+    }
+    for (const auto& block : func.blocks) {
+        if (emitted.find(block.label()) == emitted.end()) {
+            generateBasicBlock(block, frame, regMap, insts);
+        }
     }
     
     insts.push_back(RISCVInstruction::makeLABEL(exitLabel_));
@@ -316,9 +337,7 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
                 result.push_back(RISCVInstruction::makeSUB(Reg::T2, rs1, rs2));
-                result.push_back(RISCVInstruction::makeSLTI(Reg::T2, Reg::T2, 1));
-                result.push_back(RISCVInstruction::makeSLTI(Reg::T3, Reg::ZERO, 0));
-                result.push_back(RISCVInstruction::makeXORI(Reg::T2, Reg::T2, 1));
+                result.push_back(RISCVInstruction::makeSLTIU(Reg::T2, Reg::T2, 1));
                 storeResult(inst.result->id, Reg::T2, regMap, result);
             }
             break;
@@ -397,28 +416,18 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
         
         case toyc::ir::IROp::Call: {
             const size_t argCount = inst.operands.size();
-            const size_t stackArgCount = argCount > 8 ? argCount - 8 : 0;
-            const int stackArgBytes = static_cast<int>(stackArgCount * 4);
-
-            if (stackArgBytes > 0) {
-                emitSpAdjust(-stackArgBytes, result);
-            }
-
-            for (size_t i = 0; i < argCount && i < 8; ++i) {
-                int val = getRegOrLoadToTmp(inst.operands[i].id, regMap, Reg::T0, result);
-                result.push_back(RISCVInstruction::makeMV(static_cast<int>(Reg::A0 + i), val));
-            }
 
             for (size_t i = 8; i < argCount; ++i) {
-                int val = getRegOrLoadToTmp(inst.operands[i].id, regMap, Reg::T0, result);
+                const int val = getRegOrLoadToTmp(inst.operands[i].id, regMap, Reg::T0, result);
                 emitStoreToSp(val, static_cast<int>((i - 8) * 4), result);
             }
 
-            result.push_back(RISCVInstruction::makeCALL(inst.callee));
-
-            if (stackArgBytes > 0) {
-                emitSpAdjust(stackArgBytes, result);
+            for (size_t i = 0; i < argCount && i < 8; ++i) {
+                const int val = getRegOrLoadToTmp(inst.operands[i].id, regMap, Reg::T0, result);
+                result.push_back(RISCVInstruction::makeMV(static_cast<int>(Reg::A0 + i), val));
             }
+
+            result.push_back(RISCVInstruction::makeCALL(inst.callee));
 
             if (inst.result.has_value()) {
                 storeResult(inst.result->id, Reg::A0, regMap, result);

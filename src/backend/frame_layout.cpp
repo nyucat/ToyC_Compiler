@@ -1,5 +1,7 @@
 #include "backend/frame_layout.h"
 
+#include <algorithm>
+
 namespace toyc::backend {
 
 int FrameLayout::countLocalVars(const toyc::ir::IRFunction& func) {
@@ -25,6 +27,18 @@ int FrameLayout::countTempValues(const toyc::ir::IRFunction& func) {
         }
     }
     return static_cast<int>(ids.size());
+}
+
+int FrameLayout::countMaxOutgoingStackArgs(const toyc::ir::IRFunction& func) {
+    int maxArgs = 0;
+    for (const auto& block : func.blocks) {
+        for (const auto& inst : block.instructions()) {
+            if (inst.op == toyc::ir::IROp::Call) {
+                maxArgs = std::max(maxArgs, static_cast<int>(inst.operands.size()));
+            }
+        }
+    }
+    return std::max(0, maxArgs - 8);
 }
 
 bool FrameLayout::isLeafFunction(const toyc::ir::IRFunction& func) {
@@ -58,6 +72,7 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func) {
     
     int localVars = countLocalVars(func);
     int tempValues = countTempValues(func);
+    const int outgoingStackArgs = countMaxOutgoingStackArgs(func);
     int savedRegsCount = static_cast<int>(frame.usedSavedRegs.size());
     
     int size = 0;
@@ -70,8 +85,10 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func) {
     
     size += localVars * 4;
     size += tempValues * 4;
+    size += outgoingStackArgs * 4;
     
     frame.frameSize = alignTo16(size);
+    frame.outgoingArgBytes = outgoingStackArgs * 4;
     
     int offset = frame.frameSize;
     
