@@ -54,3 +54,4 @@ else()
 endif()
 
 include(cmake/ir_integration.cmake)
+include(cmake/backend_integration.cmake)

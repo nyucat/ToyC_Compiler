@@ -1,4 +1,5 @@
 #include "ast/ast.h"
+#include "backend/code_generator.h"
 #include "frontend/parser.h"
 #include "ir/ir.h"
 #include "ir/ir_builder.h"
@@ -65,8 +66,8 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        // 成员 D 接入后端后，此处应改为输出 RISC-V32 汇编。
-        toyc::ir::dumpIRModule(module, std::cout);
+        toyc::backend::CodeGenerator codeGen(options.optimize);
+        codeGen.generate(module, std::cout);
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << ex.what() << '\n';
