@@ -101,7 +101,7 @@ std::vector<BasicBlock*> reversePostOrder(IRFunction& function) {
     std::vector<BasicBlock*> postOrder;
 
     const auto dfs = [&](auto&& self, BasicBlock* block) -> void {
-        if (block == nullptr || visited.contains(block)) {
+        if (block == nullptr || visited.count(block) > 0) {
             return;
         }
         visited.insert(block);

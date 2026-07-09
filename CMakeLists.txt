@@ -31,16 +31,26 @@ add_executable(test_sema_integration
     ${TOYC_COMMON_SOURCES}
 )
 
+add_executable(test_abc_pipeline
+    tests/integration/test_abc_pipeline.cpp
+    ${TOYC_COMMON_SOURCES}
+)
+
 target_include_directories(compiler PRIVATE include)
 target_include_directories(test_sema PRIVATE include)
 target_include_directories(test_sema_integration PRIVATE include)
+target_include_directories(test_abc_pipeline PRIVATE include)
 
 if (MSVC)
     target_compile_options(compiler PRIVATE /W4)
     target_compile_options(test_sema PRIVATE /W4)
     target_compile_options(test_sema_integration PRIVATE /W4)
+    target_compile_options(test_abc_pipeline PRIVATE /W4)
 else()
     target_compile_options(compiler PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(test_sema PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(test_sema_integration PRIVATE -Wall -Wextra -pedantic)
+    target_compile_options(test_abc_pipeline PRIVATE -Wall -Wextra -pedantic)
 endif()
+
+include(cmake/ir_integration.cmake)

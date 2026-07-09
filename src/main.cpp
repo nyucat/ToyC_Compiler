@@ -1,9 +1,11 @@
 #include "ast/ast.h"
 #include "frontend/parser.h"
+#include "ir/ir.h"
+#include "ir/ir_builder.h"
+#include "optimizer/optimizer.h"
 #include "sema/semantic_analyzer.h"
 
 #include <iostream>
-#include <iterator>
 #include <sstream>
 #include <string>
 
@@ -12,6 +14,7 @@ namespace {
 struct Options {
     bool optimize = false;
     bool dumpAst = false;
+    bool dumpIr = false;
 };
 
 Options parseOptions(int argc, char** argv) {
@@ -22,6 +25,8 @@ Options parseOptions(int argc, char** argv) {
             options.optimize = true;
         } else if (arg == "--dump-ast") {
             options.dumpAst = true;
+        } else if (arg == "--dump-ir") {
+            options.dumpIr = true;
         } else {
             throw std::runtime_error("unknown argument: " + arg);
         }
@@ -48,12 +53,20 @@ int main(int argc, char** argv) {
         }
 
         toyc::sema::SemanticAnalyzer analyzer;
-        const toyc::sema::SemanticResult semaResult = analyzer.analyze(*program);
+        (void)analyzer.analyze(*program);
 
-        std::cout << "# ToyC parsed and semantically analyzed successfully\n";
-        std::cout << "# globals=" << semaResult.globalObjects.size() << '\n';
-        std::cout << "# opt=" << (options.optimize ? "on" : "off") << '\n';
-        std::cout << "# code generation is not implemented yet\n";
+        toyc::ir::IRModule module;
+        toyc::ir::IRBuilder builder(module);
+        builder.buildCompUnit(*program);
+        toyc::optimizer::runOptimizationPipeline(module, options.optimize);
+
+        if (options.dumpIr) {
+            toyc::ir::dumpIRModule(module, std::cout);
+            return 0;
+        }
+
+        // 成员 D 接入后端后，此处应改为输出 RISC-V32 汇编。
+        toyc::ir::dumpIRModule(module, std::cout);
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << ex.what() << '\n';
