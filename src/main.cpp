@@ -22,7 +22,7 @@ Options parseOptions(int argc, char** argv) {
     Options options;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "-opt") {
+        if (arg == "-opt" || arg == "-O1" || arg == "-O") {
             options.optimize = true;
         } else if (arg == "--dump-ast") {
             options.dumpAst = true;

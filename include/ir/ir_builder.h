@@ -6,6 +6,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 namespace toyc::ir {
 
@@ -57,6 +58,9 @@ private:
     void setInsertPoint(const std::string& label);
 
     [[nodiscard]] IRValue getAddressForSymbol(const ast::Symbol& symbol);
+    void bindSymbolSlot(const ast::Symbol& symbol, int slotId);
+    void pushSymbolScope();
+    void popSymbolScope();
     [[nodiscard]] bool isConstSymbol(const ast::Symbol& symbol) const;
     [[nodiscard]] std::optional<int> getConstValue(const ast::Symbol& symbol) const;
 
@@ -65,7 +69,7 @@ private:
     std::string insertBlockLabel_;
     std::vector<LoopContext> loopStack_;
     int localSlotCounter_ = 0;
-    std::map<const ast::Symbol*, int> symbolSlots_;
+    std::vector<std::map<const ast::Symbol*, int>> symbolScopeStack_;
 };
 
 } // namespace toyc::ir

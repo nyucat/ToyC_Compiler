@@ -4,6 +4,49 @@
 
 namespace toyc::backend {
 
+namespace {
+
+constexpr int kImm12Min = -2048;
+constexpr int kImm12Max = 2047;
+
+[[nodiscard]] bool fitsImm12(int value) {
+    return value >= kImm12Min && value <= kImm12Max;
+}
+
+void emitLoadFromSp(int rd, int offset, std::vector<RISCVInstruction>& insts) {
+    if (fitsImm12(offset)) {
+        insts.push_back(RISCVInstruction::makeLW(rd, offset, Reg::SP));
+        return;
+    }
+    insts.push_back(RISCVInstruction::makeLI(Reg::T6, offset));
+    insts.push_back(RISCVInstruction::makeADD(Reg::T6, Reg::SP, Reg::T6));
+    insts.push_back(RISCVInstruction::makeLW(rd, 0, Reg::T6));
+}
+
+void emitStoreToSp(int rs, int offset, std::vector<RISCVInstruction>& insts) {
+    if (fitsImm12(offset)) {
+        insts.push_back(RISCVInstruction::makeSW(rs, offset, Reg::SP));
+        return;
+    }
+    insts.push_back(RISCVInstruction::makeLI(Reg::T6, offset));
+    insts.push_back(RISCVInstruction::makeADD(Reg::T6, Reg::SP, Reg::T6));
+    insts.push_back(RISCVInstruction::makeSW(rs, 0, Reg::T6));
+}
+
+void emitSpAdjust(int delta, std::vector<RISCVInstruction>& insts) {
+    if (delta == 0) {
+        return;
+    }
+    if (fitsImm12(delta)) {
+        insts.push_back(RISCVInstruction::makeADDI(Reg::SP, Reg::SP, delta));
+        return;
+    }
+    insts.push_back(RISCVInstruction::makeLI(Reg::T6, delta));
+    insts.push_back(RISCVInstruction::makeADD(Reg::SP, Reg::SP, Reg::T6));
+}
+
+} // namespace
+
 CodeGenerator::CodeGenerator(bool optimize) : optimize_(optimize) {}
 
 void CodeGenerator::generate(const toyc::ir::IRModule& module, std::ostream& out) {
@@ -12,23 +55,16 @@ void CodeGenerator::generate(const toyc::ir::IRModule& module, std::ostream& out
 }
 
 void CodeGenerator::generateDataSection(const toyc::ir::IRModule& module, std::ostream& out) {
-    bool hasData = false;
-    for (const auto& global : module.globals) {
-        if (!global.isConst) {
-            hasData = true;
-            break;
-        }
+    if (module.globals.empty()) {
+        return;
     }
-    
-    if (!hasData) return;
-    
+
     out << "    .data\n";
     for (const auto& global : module.globals) {
-        if (!global.isConst) {
-            out << "    .align 2\n";
-            out << global.name << ":\n";
-            out << "    .word " << global.initValue << "\n";
-        }
+        out << "    .globl " << global.name << "\n";
+        out << "    .align 2\n";
+        out << global.name << ":\n";
+        out << "    .word " << global.initValue << "\n";
     }
     out << "\n";
 }
@@ -74,17 +110,15 @@ void CodeGenerator::generatePrologue(
     std::vector<RISCVInstruction>& insts
 ) {
     (void)func;
-    if (frame.frameSize > 0) {
-        insts.push_back(RISCVInstruction::makeADDI(Reg::SP, Reg::SP, -frame.frameSize));
-    }
-    
+    emitSpAdjust(-frame.frameSize, insts);
+
     if (!frame.isLeafFunction) {
-        insts.push_back(RISCVInstruction::makeSW(Reg::RA, frame.raOffset, Reg::SP));
+        emitStoreToSp(Reg::RA, frame.raOffset, insts);
     }
-    
+
     int idx = 0;
     for (int reg : frame.usedSavedRegs) {
-        insts.push_back(RISCVInstruction::makeSW(reg, frame.savedRegOffsets[idx], Reg::SP));
+        emitStoreToSp(reg, frame.savedRegOffsets[idx], insts);
         idx++;
     }
 }
@@ -96,17 +130,15 @@ void CodeGenerator::generateEpilogue(
 ) {
     int idx = static_cast<int>(frame.savedRegOffsets.size()) - 1;
     for (auto it = frame.usedSavedRegs.rbegin(); it != frame.usedSavedRegs.rend(); ++it) {
-        insts.push_back(RISCVInstruction::makeLW(*it, frame.savedRegOffsets[idx], Reg::SP));
+        emitLoadFromSp(*it, frame.savedRegOffsets[idx], insts);
         idx--;
     }
-    
+
     if (!frame.isLeafFunction) {
-        insts.push_back(RISCVInstruction::makeLW(Reg::RA, frame.raOffset, Reg::SP));
+        emitLoadFromSp(Reg::RA, frame.raOffset, insts);
     }
-    
-    if (frame.frameSize > 0) {
-        insts.push_back(RISCVInstruction::makeADDI(Reg::SP, Reg::SP, frame.frameSize));
-    }
+
+    emitSpAdjust(frame.frameSize, insts);
     
     if (func.name == "main") {
         insts.push_back(RISCVInstruction::makeLI(Reg::A7, 93));
@@ -126,10 +158,9 @@ int CodeGenerator::getRegOrLoadToTmp(
     if (it != regMap.end()) {
         if (it->second.isReg) {
             return it->second.regOrOffset;
-        } else {
-            insts.push_back(RISCVInstruction::makeLW(tmpReg, it->second.regOrOffset, Reg::SP));
-            return tmpReg;
         }
+        emitLoadFromSp(tmpReg, it->second.regOrOffset, insts);
+        return tmpReg;
     }
     return tmpReg;
 }
@@ -142,7 +173,7 @@ void CodeGenerator::storeResult(
 ) {
     auto it = regMap.find(vreg);
     if (it != regMap.end() && !it->second.isReg) {
-        insts.push_back(RISCVInstruction::makeSW(srcReg, it->second.regOrOffset, Reg::SP));
+        emitStoreToSp(srcReg, it->second.regOrOffset, insts);
     }
 }
 
@@ -188,8 +219,7 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
                 int rd = Reg::T0;
                 const int addrVreg = inst.operands[0].id;
                 if (frame.localVarOffsets.count(addrVreg) > 0) {
-                    result.push_back(RISCVInstruction::makeLW(
-                        rd, frame.localVarOffsets.at(addrVreg), Reg::SP));
+                    emitLoadFromSp(rd, frame.localVarOffsets.at(addrVreg), result);
                 } else {
                     int addr = getRegOrLoadToTmp(addrVreg, regMap, Reg::T1, result);
                     result.push_back(RISCVInstruction::makeLW(rd, 0, addr));
@@ -204,8 +234,7 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
                 int val = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 const int addrVreg = inst.operands[1].id;
                 if (frame.localVarOffsets.count(addrVreg) > 0) {
-                    result.push_back(RISCVInstruction::makeSW(
-                        val, frame.localVarOffsets.at(addrVreg), Reg::SP));
+                    emitStoreToSp(val, frame.localVarOffsets.at(addrVreg), result);
                 } else {
                     int addr = getRegOrLoadToTmp(addrVreg, regMap, Reg::T1, result);
                     result.push_back(RISCVInstruction::makeSW(val, 0, addr));
@@ -367,23 +396,45 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
         }
         
         case toyc::ir::IROp::Call: {
-            int argReg = Reg::A0;
-            for (size_t i = 0; i < inst.operands.size() && i < 8; ++i) {
-                int val = getRegOrLoadToTmp(inst.operands[i].id, regMap, Reg::T0, result);
-                result.push_back(RISCVInstruction::makeMV(argReg++, val));
+            const size_t argCount = inst.operands.size();
+            const size_t stackArgCount = argCount > 8 ? argCount - 8 : 0;
+            const int stackArgBytes = static_cast<int>(stackArgCount * 4);
+
+            if (stackArgBytes > 0) {
+                emitSpAdjust(-stackArgBytes, result);
             }
+
+            for (size_t i = 0; i < argCount && i < 8; ++i) {
+                int val = getRegOrLoadToTmp(inst.operands[i].id, regMap, Reg::T0, result);
+                result.push_back(RISCVInstruction::makeMV(static_cast<int>(Reg::A0 + i), val));
+            }
+
+            for (size_t i = 8; i < argCount; ++i) {
+                int val = getRegOrLoadToTmp(inst.operands[i].id, regMap, Reg::T0, result);
+                emitStoreToSp(val, static_cast<int>((i - 8) * 4), result);
+            }
+
             result.push_back(RISCVInstruction::makeCALL(inst.callee));
+
+            if (stackArgBytes > 0) {
+                emitSpAdjust(stackArgBytes, result);
+            }
+
             if (inst.result.has_value()) {
                 storeResult(inst.result->id, Reg::A0, regMap, result);
             }
             break;
         }
-        
+
         case toyc::ir::IROp::ParamLoad: {
             if (inst.result.has_value()) {
-                int paramIdx = inst.immediate;
+                const int paramIdx = inst.immediate;
                 if (paramIdx < 8) {
                     result.push_back(RISCVInstruction::makeMV(Reg::T0, Reg::A0 + paramIdx));
+                    storeResult(inst.result->id, Reg::T0, regMap, result);
+                } else {
+                    const int offset = frame.frameSize + (paramIdx - 8) * 4;
+                    emitLoadFromSp(Reg::T0, offset, result);
                     storeResult(inst.result->id, Reg::T0, regMap, result);
                 }
             }

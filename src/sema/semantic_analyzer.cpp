@@ -260,11 +260,20 @@ void SemanticAnalyzer::analyzeDecl(ast::DeclAST& decl, bool isGlobal) {
 
 void SemanticAnalyzer::analyzeVarDecl(ast::VarDeclAST& decl, bool isGlobal) {
     ast::SymbolKind kind = isGlobal ? ast::SymbolKind::GlobalVar : ast::SymbolKind::LocalVar;
-    ast::Symbol* symbol = resolveName(decl.name());
-    if (symbol == nullptr) {
-        symbol = declareVariable(decl.name(), kind, isGlobal);
-    } else if (symbol->kind != kind) {
-        throw SemanticError("redefinition of identifier: " + decl.name());
+    ast::Symbol* symbol = nullptr;
+
+    if (isGlobal) {
+        symbol = context_.globalScope_->lookupLocal(decl.name());
+        if (symbol == nullptr) {
+            symbol = declareVariable(decl.name(), kind, true);
+        } else if (symbol->kind != kind) {
+            throw SemanticError("redefinition of identifier: " + decl.name());
+        }
+    } else {
+        if (context_.currentScope()->lookupLocal(decl.name()) != nullptr) {
+            throw SemanticError("redefinition of identifier: " + decl.name());
+        }
+        symbol = declareVariable(decl.name(), kind, false);
     }
 
     if (!isGlobal) {
@@ -287,11 +296,20 @@ void SemanticAnalyzer::analyzeVarDecl(ast::VarDeclAST& decl, bool isGlobal) {
 
 void SemanticAnalyzer::analyzeConstDecl(ast::ConstDeclAST& decl, bool isGlobal) {
     ast::SymbolKind kind = isGlobal ? ast::SymbolKind::GlobalConst : ast::SymbolKind::LocalConst;
-    ast::Symbol* symbol = resolveName(decl.name());
-    if (symbol == nullptr) {
-        symbol = declareVariable(decl.name(), kind, isGlobal);
-    } else if (symbol->kind != kind) {
-        throw SemanticError("redefinition of identifier: " + decl.name());
+    ast::Symbol* symbol = nullptr;
+
+    if (isGlobal) {
+        symbol = context_.globalScope_->lookupLocal(decl.name());
+        if (symbol == nullptr) {
+            symbol = declareVariable(decl.name(), kind, true);
+        } else if (symbol->kind != kind) {
+            throw SemanticError("redefinition of identifier: " + decl.name());
+        }
+    } else {
+        if (context_.currentScope()->lookupLocal(decl.name()) != nullptr) {
+            throw SemanticError("redefinition of identifier: " + decl.name());
+        }
+        symbol = declareVariable(decl.name(), kind, false);
     }
 
     if (!isGlobal) {
@@ -299,6 +317,7 @@ void SemanticAnalyzer::analyzeConstDecl(ast::ConstDeclAST& decl, bool isGlobal) 
     }
 
     decl.resolvedSymbol = symbol;
+    analyzeExpr(decl.initializer(), ExprContext::Value);
 
     ConstantEvaluator evaluator(context_.currentScope());
     const ConstEvalResult evalResult = evaluator.evaluate(decl.initializer());

@@ -102,7 +102,8 @@ void IRBuilder::buildFunction(const ast::FuncDefAST& func) {
     module_.functions.push_back(std::move(function));
     currentFunction_ = &module_.functions.back();
     localSlotCounter_ = 0;
-    symbolSlots_.clear();
+    symbolScopeStack_.clear();
+    symbolScopeStack_.emplace_back();
     loopStack_.clear();
 
     const std::string entryLabel = newBlock("entry");
@@ -111,7 +112,7 @@ void IRBuilder::buildFunction(const ast::FuncDefAST& func) {
     for (const auto& param : func.parameters()) {
         const ast::Symbol* symbol = requireSymbol(param->resolvedSymbol, "parameter " + param->name());
         IRValue slot = emitUnary(IROp::Alloca, IRValue{-1, IRType::Ptr});
-        symbolSlots_[symbol] = slot.id;
+        bindSymbolSlot(*symbol, slot.id);
 
         IRValue paramValue = newReg();
         IRInstruction loadParam;
@@ -139,12 +140,19 @@ void IRBuilder::buildFunction(const ast::FuncDefAST& func) {
 }
 
 void IRBuilder::buildBlock(const ast::BlockAST& block, bool createScope) {
-    (void)createScope;
+    if (createScope) {
+        pushSymbolScope();
+    }
+
     for (const auto& stmt : block.statements()) {
         buildStatement(*stmt);
         if (currentBlock().isTerminated()) {
             break;
         }
+    }
+
+    if (createScope) {
+        popSymbolScope();
     }
 }
 
@@ -247,7 +255,7 @@ void IRBuilder::buildDecl(const ast::DeclAST& decl) {
 
     if (symbol->kind == ast::SymbolKind::LocalConst || symbol->kind == ast::SymbolKind::LocalVar) {
         IRValue slot = emitUnary(IROp::Alloca, IRValue{-1, IRType::Ptr});
-        symbolSlots_[symbol] = slot.id;
+        bindSymbolSlot(*symbol, slot.id);
         emitStore(init, slot);
         return;
     }
@@ -264,6 +272,7 @@ void IRBuilder::buildAssign(const ast::AssignStmtAST& stmt) {
         emitGlobalStore(value, symbol->name);
         break;
     case ast::SymbolKind::LocalVar:
+    case ast::SymbolKind::Parameter:
         emitStore(value, getAddressForSymbol(*symbol));
         break;
     default:
@@ -525,7 +534,8 @@ std::string IRBuilder::newBlock(const std::string& hint) {
     if (currentFunction_ == nullptr) {
         throw std::runtime_error("cannot create block outside function");
     }
-    const std::string label = hint + "." + std::to_string(currentFunction_->nextBlockId++);
+    const std::string label = currentFunction_->name + "." + hint + "." +
+                                std::to_string(currentFunction_->nextBlockId++);
     currentFunction_->blocks.emplace_back(label);
     return label;
 }
@@ -556,11 +566,31 @@ void IRBuilder::setInsertPoint(const std::string& label) {
 }
 
 IRValue IRBuilder::getAddressForSymbol(const ast::Symbol& symbol) {
-    auto it = symbolSlots_.find(&symbol);
-    if (it == symbolSlots_.end()) {
-        throw std::runtime_error("missing slot for symbol " + symbol.name);
+    for (auto it = symbolScopeStack_.rbegin(); it != symbolScopeStack_.rend(); ++it) {
+        const auto found = it->find(&symbol);
+        if (found != it->end()) {
+            return IRValue{found->second, IRType::Ptr};
+        }
     }
-    return IRValue{it->second, IRType::Ptr};
+    throw std::runtime_error("missing slot for symbol " + symbol.name);
+}
+
+void IRBuilder::bindSymbolSlot(const ast::Symbol& symbol, int slotId) {
+    if (symbolScopeStack_.empty()) {
+        throw std::runtime_error("missing symbol scope stack");
+    }
+    symbolScopeStack_.back()[&symbol] = slotId;
+}
+
+void IRBuilder::pushSymbolScope() {
+    symbolScopeStack_.emplace_back();
+}
+
+void IRBuilder::popSymbolScope() {
+    if (symbolScopeStack_.size() <= 1) {
+        throw std::runtime_error("cannot pop function symbol scope");
+    }
+    symbolScopeStack_.pop_back();
 }
 
 bool IRBuilder::isConstSymbol(const ast::Symbol& symbol) const {
