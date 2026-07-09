@@ -61,6 +61,14 @@ std::string localBlockLabel(const std::string& label) {
     return out;
 }
 
+int resultDestReg(int vreg, const RegMapping& regMap, int scratch) {
+    auto it = regMap.find(vreg);
+    if (it != regMap.end() && it->second.isReg) {
+        return it->second.regOrOffset;
+    }
+    return scratch;
+}
+
 } // namespace
 
 CodeGenerator::CodeGenerator(bool optimize) : optimize_(optimize) {}
@@ -94,7 +102,7 @@ void CodeGenerator::generateTextSection(const toyc::ir::IRModule& module, std::o
 
 void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostream& out) {
     FrameLayout frameLayout;
-    FrameInfo frame = frameLayout.layout(func);
+    FrameInfo frame = frameLayout.layout(func, optimize_);
     
     RegisterAllocator regAlloc;
     RegMapping regMap = regAlloc.allocate(func, frame, optimize_);
@@ -205,7 +213,14 @@ void CodeGenerator::storeResult(
     std::vector<RISCVInstruction>& insts
 ) {
     auto it = regMap.find(vreg);
-    if (it != regMap.end() && !it->second.isReg) {
+    if (it == regMap.end()) {
+        return;
+    }
+    if (it->second.isReg) {
+        if (srcReg != it->second.regOrOffset) {
+            insts.push_back(RISCVInstruction::makeMV(it->second.regOrOffset, srcReg));
+        }
+    } else {
         emitStoreToSp(srcReg, it->second.regOrOffset, insts);
     }
 }
@@ -238,6 +253,10 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
         case toyc::ir::IROp::Const: {
             if (inst.result.has_value()) {
                 int rd = Reg::T0;
+                auto it = regMap.find(inst.result->id);
+                if (it != regMap.end() && it->second.isReg) {
+                    rd = it->second.regOrOffset;
+                }
                 result.push_back(RISCVInstruction::makeLI(rd, inst.immediate));
                 storeResult(inst.result->id, rd, regMap, result);
             }
@@ -250,6 +269,10 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
         case toyc::ir::IROp::Load: {
             if (inst.result.has_value() && !inst.operands.empty()) {
                 int rd = Reg::T0;
+                auto rdIt = regMap.find(inst.result->id);
+                if (rdIt != regMap.end() && rdIt->second.isReg) {
+                    rd = rdIt->second.regOrOffset;
+                }
                 const int addrVreg = inst.operands[0].id;
                 if (frame.localVarOffsets.count(addrVreg) > 0) {
                     emitLoadFromSp(rd, frame.localVarOffsets.at(addrVreg), result);
@@ -298,8 +321,9 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
-                result.push_back(RISCVInstruction::makeADD(Reg::T2, rs1, rs2));
-                storeResult(inst.result->id, Reg::T2, regMap, result);
+                int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+                result.push_back(RISCVInstruction::makeADD(rd, rs1, rs2));
+                storeResult(inst.result->id, rd, regMap, result);
             }
             break;
         }
@@ -308,8 +332,9 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
-                result.push_back(RISCVInstruction::makeSUB(Reg::T2, rs1, rs2));
-                storeResult(inst.result->id, Reg::T2, regMap, result);
+                int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+                result.push_back(RISCVInstruction::makeSUB(rd, rs1, rs2));
+                storeResult(inst.result->id, rd, regMap, result);
             }
             break;
         }
@@ -318,8 +343,9 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
-                result.push_back(RISCVInstruction::makeMUL(Reg::T2, rs1, rs2));
-                storeResult(inst.result->id, Reg::T2, regMap, result);
+                int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+                result.push_back(RISCVInstruction::makeMUL(rd, rs1, rs2));
+                storeResult(inst.result->id, rd, regMap, result);
             }
             break;
         }
@@ -328,8 +354,9 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
-                result.push_back(RISCVInstruction::makeDIV(Reg::T2, rs1, rs2));
-                storeResult(inst.result->id, Reg::T2, regMap, result);
+                int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+                result.push_back(RISCVInstruction::makeDIV(rd, rs1, rs2));
+                storeResult(inst.result->id, rd, regMap, result);
             }
             break;
         }
@@ -338,8 +365,9 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
-                result.push_back(RISCVInstruction::makeREM(Reg::T2, rs1, rs2));
-                storeResult(inst.result->id, Reg::T2, regMap, result);
+                int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+                result.push_back(RISCVInstruction::makeREM(rd, rs1, rs2));
+                storeResult(inst.result->id, rd, regMap, result);
             }
             break;
         }

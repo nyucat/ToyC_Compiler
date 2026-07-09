@@ -41,6 +41,11 @@ private:
         const toyc::ir::IRFunction& func,
         const FrameInfo& frame
     );
+
+    RegMapping allocateWithRegisters(
+        const toyc::ir::IRFunction& func,
+        const FrameInfo& frame
+    );
 };
 
 } // namespace toyc::backend

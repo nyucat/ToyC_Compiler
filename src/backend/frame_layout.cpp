@@ -52,10 +52,19 @@ bool FrameLayout::isLeafFunction(const toyc::ir::IRFunction& func) {
     return true;
 }
 
-std::set<int> FrameLayout::computeSavedRegs(const toyc::ir::IRFunction& func) {
+std::set<int> FrameLayout::computeSavedRegs(const toyc::ir::IRFunction& func, bool optimize) {
     std::set<int> usedRegs;
     usedRegs.insert(8);
     usedRegs.insert(9);
+
+    if (optimize) {
+        const int tempValues = countTempValues(func);
+        const int regHeld = std::min(tempValues, 10);
+        for (int i = 0; i < regHeld; ++i) {
+            usedRegs.insert(18 + i);
+        }
+    }
+
     return usedRegs;
 }
 
@@ -63,15 +72,19 @@ int FrameLayout::alignTo16(int size) {
     return (size + 15) & ~15;
 }
 
-FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func) {
+FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func, bool optimize) {
     FrameInfo frame;
     
     frame.isLeafFunction = isLeafFunction(func);
     frame.hasCall = !frame.isLeafFunction;
-    frame.usedSavedRegs = computeSavedRegs(func);
     
-    int localVars = countLocalVars(func);
-    int tempValues = countTempValues(func);
+    const int localVars = countLocalVars(func);
+    const int tempValues = countTempValues(func);
+    const int regHeld = optimize ? std::min(tempValues, 10) : 0;
+    const int stackTemps = tempValues - regHeld;
+
+    frame.usedSavedRegs = computeSavedRegs(func, optimize);
+    
     const int outgoingStackArgs = countMaxOutgoingStackArgs(func);
     int savedRegsCount = static_cast<int>(frame.usedSavedRegs.size());
     
@@ -84,7 +97,7 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func) {
     size += savedRegsCount * 4;
     
     size += localVars * 4;
-    size += tempValues * 4;
+    size += stackTemps * 4;
     size += outgoingStackArgs * 4;
     
     frame.frameSize = alignTo16(size);

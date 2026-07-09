@@ -13,7 +13,6 @@ void ConstantFoldPass::run(toyc::ir::IRModule& module) {
     for (auto& function : module.functions) {
         std::unordered_map<int, int> constants;
         for (auto& block : function.blocks) {
-            constants.clear();
             for (auto& inst : block.instructions()) {
                 if (!inst.result.has_value()) {
                     continue;

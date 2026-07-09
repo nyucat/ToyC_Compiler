@@ -12,8 +12,6 @@ namespace {
 
 using namespace toyc::ir;
 
-void repairBranchTargets(IRFunction& function);
-
 void jumpThreading(IRFunction& function) {
     buildCFG(function);
 
@@ -119,41 +117,10 @@ void mergeBlocks(IRFunction& function) {
 
         buildCFG(function);
     }
-
-    repairBranchTargets(function);
 }
 
 void copyPropagation(IRFunction& function) {
     (void)function;
-}
-
-void repairBranchTargets(IRFunction& function) {
-    std::unordered_set<std::string> labels;
-    for (const auto& block : function.blocks) {
-        labels.insert(block.label());
-    }
-    if (labels.empty()) {
-        return;
-    }
-
-    const std::string& entryLabel = function.blocks.front().label();
-
-    auto repair = [&](std::string& target) {
-        if (labels.find(target) == labels.end()) {
-            target = entryLabel;
-        }
-    };
-
-    for (auto& block : function.blocks) {
-        for (auto& inst : block.instructions()) {
-            if (inst.op == IROp::Branch) {
-                repair(inst.label);
-            } else if (inst.op == IROp::CondBranch) {
-                repair(inst.trueLabel);
-                repair(inst.falseLabel);
-            }
-        }
-    }
 }
 
 } // namespace
