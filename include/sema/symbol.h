@@ -6,7 +6,7 @@
 
 namespace toyc::ast {
 
-// 与成员 C 约定的符号接口。语义分析模块负责填充该结构。
+// A/B/C 共同约定的符号接口。B 负责填充，C 只读取该结构。
 enum class SymbolKind {
     GlobalVar,
     GlobalConst,
