@@ -58,8 +58,11 @@ std::set<int> FrameLayout::computeSavedRegs(const toyc::ir::IRFunction& func, bo
     usedRegs.insert(9);
 
     if (optimize) {
+        const int localVars = countLocalVars(func);
         const int tempValues = countTempValues(func);
-        const int regHeld = std::min(tempValues, 10);
+        const int localRegHeld = std::min(localVars, 10);
+        const int tempRegHeld = std::min(tempValues, 10 - localRegHeld);
+        const int regHeld = localRegHeld + tempRegHeld;
         for (int i = 0; i < regHeld; ++i) {
             usedRegs.insert(18 + i);
         }
@@ -80,8 +83,11 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func, bool optimize) {
     
     const int localVars = countLocalVars(func);
     const int tempValues = countTempValues(func);
-    const int regHeld = optimize ? std::min(tempValues, 10) : 0;
-    const int stackTemps = tempValues - regHeld;
+    const int localRegHeld = optimize ? std::min(localVars, 10) : 0;
+    const int tempRegHeld = optimize ? std::min(tempValues, 10 - localRegHeld) : 0;
+    const int regHeld = localRegHeld + tempRegHeld;
+    const int stackLocals = localVars - localRegHeld;
+    const int stackTemps = tempValues - tempRegHeld;
 
     frame.usedSavedRegs = computeSavedRegs(func, optimize);
     
@@ -96,7 +102,7 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func, bool optimize) {
     
     size += savedRegsCount * 4;
     
-    size += localVars * 4;
+    size += stackLocals * 4;
     size += stackTemps * 4;
     size += outgoingStackArgs * 4;
     

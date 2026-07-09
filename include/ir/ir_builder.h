@@ -68,7 +68,6 @@ private:
     IRFunction* currentFunction_ = nullptr;
     std::string insertBlockLabel_;
     std::vector<LoopContext> loopStack_;
-    int localSlotCounter_ = 0;
     std::vector<std::map<const ast::Symbol*, int>> symbolScopeStack_;
 };
 

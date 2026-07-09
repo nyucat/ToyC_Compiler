@@ -7,10 +7,41 @@
 
 namespace toyc::optimizer {
 
-void ConstantFoldPass::run(toyc::ir::IRModule& module) {
-    using namespace toyc::ir;
+namespace {
 
+using namespace toyc::ir;
+
+void foldGlobalConstants(IRFunction& function, const IRModule& module) {
+    std::unordered_map<std::string, int> globalValues;
+    for (const IRGlobal& global : module.globals) {
+        if (global.isConst) {
+            globalValues.emplace(global.name, global.initValue);
+        }
+    }
+
+    for (auto& block : function.blocks) {
+        for (auto& inst : block.instructions()) {
+            if (inst.op != IROp::GlobalLoad || !inst.result.has_value()) {
+                continue;
+            }
+            const auto it = globalValues.find(inst.callee);
+            if (it == globalValues.end()) {
+                continue;
+            }
+            inst.op = IROp::Const;
+            inst.immediate = it->second;
+            inst.callee.clear();
+            inst.operands.clear();
+        }
+    }
+}
+
+} // namespace
+
+void ConstantFoldPass::run(toyc::ir::IRModule& module) {
     for (auto& function : module.functions) {
+        foldGlobalConstants(function, module);
+
         std::unordered_map<int, int> constants;
         for (auto& block : function.blocks) {
             for (auto& inst : block.instructions()) {

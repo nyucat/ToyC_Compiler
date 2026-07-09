@@ -60,9 +60,6 @@ void jumpThreading(IRFunction& function) {
 
             if (inst.op == IROp::Branch) {
                 inst.label = resolveTarget(inst.label);
-            } else if (inst.op == IROp::CondBranch) {
-                inst.trueLabel = resolveTarget(inst.trueLabel);
-                inst.falseLabel = resolveTarget(inst.falseLabel);
             }
         }
     }
@@ -129,7 +126,6 @@ void CfgSimplifyPass::run(IRModule& module) {
     for (auto& function : module.functions) {
         copyPropagation(function);
         jumpThreading(function);
-        mergeBlocks(function);
     }
 }
 

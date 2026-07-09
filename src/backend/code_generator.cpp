@@ -274,7 +274,12 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
                     rd = rdIt->second.regOrOffset;
                 }
                 const int addrVreg = inst.operands[0].id;
-                if (frame.localVarOffsets.count(addrVreg) > 0) {
+                auto addrIt = regMap.find(addrVreg);
+                if (addrIt != regMap.end() && addrIt->second.isReg) {
+                    if (rd != addrIt->second.regOrOffset) {
+                        result.push_back(RISCVInstruction::makeMV(rd, addrIt->second.regOrOffset));
+                    }
+                } else if (frame.localVarOffsets.count(addrVreg) > 0) {
                     emitLoadFromSp(rd, frame.localVarOffsets.at(addrVreg), result);
                 } else {
                     int addr = getRegOrLoadToTmp(addrVreg, regMap, Reg::T1, result);
@@ -289,7 +294,10 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             if (inst.operands.size() >= 2) {
                 int val = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 const int addrVreg = inst.operands[1].id;
-                if (frame.localVarOffsets.count(addrVreg) > 0) {
+                auto addrIt = regMap.find(addrVreg);
+                if (addrIt != regMap.end() && addrIt->second.isReg) {
+                    storeResult(addrVreg, val, regMap, result);
+                } else if (frame.localVarOffsets.count(addrVreg) > 0) {
                     emitStoreToSp(val, frame.localVarOffsets.at(addrVreg), result);
                 } else {
                     int addr = getRegOrLoadToTmp(addrVreg, regMap, Reg::T1, result);
@@ -326,9 +334,7 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
                 storeResult(inst.result->id, rd, regMap, result);
             }
             break;
-        }
-        
-        case toyc::ir::IROp::Sub: {
+        }        case toyc::ir::IROp::Sub: {
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);

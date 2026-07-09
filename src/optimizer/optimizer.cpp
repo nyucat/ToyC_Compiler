@@ -18,7 +18,7 @@ void runOptimizationPipeline(toyc::ir::IRModule& module, bool enableOpt) {
     CfgSimplifyPass cfgSimplify;
     DeadCodeEliminationPass deadCode;
 
-    for (int round = 0; round < 2; ++round) {
+    for (int round = 0; round < 4; ++round) {
         constantFold.run(module);
         cfgSimplify.run(module);
         deadCode.run(module);

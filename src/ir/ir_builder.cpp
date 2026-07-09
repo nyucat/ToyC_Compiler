@@ -101,7 +101,6 @@ void IRBuilder::buildFunction(const ast::FuncDefAST& func) {
 
     module_.functions.push_back(std::move(function));
     currentFunction_ = &module_.functions.back();
-    localSlotCounter_ = 0;
     symbolScopeStack_.clear();
     symbolScopeStack_.emplace_back();
     loopStack_.clear();
