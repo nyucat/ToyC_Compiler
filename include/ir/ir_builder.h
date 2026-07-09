@@ -10,8 +10,8 @@
 namespace toyc::ir {
 
 struct LoopContext {
-    BasicBlock* continueTarget = nullptr;
-    BasicBlock* breakTarget = nullptr;
+    std::string continueLabel;
+    std::string breakLabel;
 };
 
 class IRBuilder {
@@ -52,9 +52,9 @@ private:
     void emitCondBranch(IRValue cond, const std::string& trueLabel, const std::string& falseLabel);
 
     [[nodiscard]] IRValue newReg(IRType type = IRType::I32);
-    [[nodiscard]] BasicBlock& newBlock(const std::string& hint);
+    [[nodiscard]] std::string newBlock(const std::string& hint);
     [[nodiscard]] BasicBlock& currentBlock();
-    void setInsertPoint(BasicBlock& block);
+    void setInsertPoint(const std::string& label);
 
     [[nodiscard]] IRValue getAddressForSymbol(const ast::Symbol& symbol);
     [[nodiscard]] bool isConstSymbol(const ast::Symbol& symbol) const;
@@ -62,7 +62,7 @@ private:
 
     IRModule& module_;
     IRFunction* currentFunction_ = nullptr;
-    BasicBlock* insertBlock_ = nullptr;
+    std::string insertBlockLabel_;
     std::vector<LoopContext> loopStack_;
     int localSlotCounter_ = 0;
     std::map<const ast::Symbol*, int> symbolSlots_;

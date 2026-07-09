@@ -18,6 +18,7 @@ public:
     
 private:
     bool optimize_;
+    std::string exitLabel_;
     
     void generateDataSection(const toyc::ir::IRModule& module, std::ostream& out);
     void generateTextSection(const toyc::ir::IRModule& module, std::ostream& out);

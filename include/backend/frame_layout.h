@@ -24,6 +24,7 @@ public:
     
 private:
     int countLocalVars(const toyc::ir::IRFunction& func);
+    int countTempValues(const toyc::ir::IRFunction& func);
     bool isLeafFunction(const toyc::ir::IRFunction& func);
     std::set<int> computeSavedRegs(const toyc::ir::IRFunction& func);
     int alignTo16(int size);

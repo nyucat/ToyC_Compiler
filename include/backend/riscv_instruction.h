@@ -214,6 +214,12 @@ public:
         return inst;
     }
     
+    static RISCVInstruction makeSLTIU(int rd, int rs, int imm) {
+        RISCVInstruction inst(RISCVOp::SLTIU);
+        inst.addReg(rd).addReg(rs).addImm(imm);
+        return inst;
+    }
+    
     static RISCVInstruction makeSLTU(int rd, int rs1, int rs2) {
         RISCVInstruction inst(RISCVOp::SLTU);
         inst.addReg(rd).addReg(rs1).addReg(rs2);

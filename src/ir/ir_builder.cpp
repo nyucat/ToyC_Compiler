@@ -105,8 +105,8 @@ void IRBuilder::buildFunction(const ast::FuncDefAST& func) {
     symbolSlots_.clear();
     loopStack_.clear();
 
-    BasicBlock& entry = newBlock("entry");
-    setInsertPoint(entry);
+    const std::string entryLabel = newBlock("entry");
+    setInsertPoint(entryLabel);
 
     for (const auto& param : func.parameters()) {
         const ast::Symbol* symbol = requireSymbol(param->resolvedSymbol, "parameter " + param->name());
@@ -135,7 +135,7 @@ void IRBuilder::buildFunction(const ast::FuncDefAST& func) {
 
     buildCFG(*currentFunction_);
     currentFunction_ = nullptr;
-    insertBlock_ = nullptr;
+    insertBlockLabel_.clear();
 }
 
 void IRBuilder::buildBlock(const ast::BlockAST& block, bool createScope) {
@@ -169,63 +169,64 @@ void IRBuilder::buildStatement(const ast::StmtAST& stmt) {
     }
     if (const auto* ifStmt = dynamic_cast<const ast::IfStmtAST*>(&stmt)) {
         IRValue cond = buildExpr(ifStmt->condition());
-        BasicBlock& thenBlock = newBlock("if.then");
-        BasicBlock& mergeBlock = newBlock("if.end");
-        BasicBlock* elseBlock = ifStmt->elseBranch() != nullptr ? &newBlock("if.else") : &mergeBlock;
+        const std::string thenLabel = newBlock("if.then");
+        const std::string mergeLabel = newBlock("if.end");
+        const std::string elseLabel =
+            ifStmt->elseBranch() != nullptr ? newBlock("if.else") : mergeLabel;
 
-        emitCondBranch(cond, thenBlock.label(), elseBlock->label());
+        emitCondBranch(cond, thenLabel, elseLabel);
 
-        setInsertPoint(thenBlock);
+        setInsertPoint(thenLabel);
         buildStatement(ifStmt->thenBranch());
         if (!currentBlock().isTerminated()) {
-            emitBranch(mergeBlock.label());
+            emitBranch(mergeLabel);
         }
 
         if (ifStmt->elseBranch() != nullptr) {
-            setInsertPoint(*elseBlock);
+            setInsertPoint(elseLabel);
             buildStatement(*ifStmt->elseBranch());
             if (!currentBlock().isTerminated()) {
-                emitBranch(mergeBlock.label());
+                emitBranch(mergeLabel);
             }
         }
 
-        setInsertPoint(mergeBlock);
+        setInsertPoint(mergeLabel);
         return;
     }
     if (const auto* whileStmt = dynamic_cast<const ast::WhileStmtAST*>(&stmt)) {
-        BasicBlock& condBlock = newBlock("while.cond");
-        BasicBlock& bodyBlock = newBlock("while.body");
-        BasicBlock& endBlock = newBlock("while.end");
+        const std::string condLabel = newBlock("while.cond");
+        const std::string bodyLabel = newBlock("while.body");
+        const std::string endLabel = newBlock("while.end");
 
-        emitBranch(condBlock.label());
+        emitBranch(condLabel);
 
-        setInsertPoint(condBlock);
+        setInsertPoint(condLabel);
         IRValue cond = buildExpr(whileStmt->condition());
-        emitCondBranch(cond, bodyBlock.label(), endBlock.label());
+        emitCondBranch(cond, bodyLabel, endLabel);
 
-        setInsertPoint(bodyBlock);
-        loopStack_.push_back(LoopContext{&condBlock, &endBlock});
+        setInsertPoint(bodyLabel);
+        loopStack_.push_back(LoopContext{condLabel, endLabel});
         buildStatement(whileStmt->body());
         loopStack_.pop_back();
         if (!currentBlock().isTerminated()) {
-            emitBranch(condBlock.label());
+            emitBranch(condLabel);
         }
 
-        setInsertPoint(endBlock);
+        setInsertPoint(endLabel);
         return;
     }
     if (dynamic_cast<const ast::BreakStmtAST*>(&stmt)) {
         if (loopStack_.empty()) {
             throw std::runtime_error("break outside loop");
         }
-        emitBranch(loopStack_.back().breakTarget->label());
+        emitBranch(loopStack_.back().breakLabel);
         return;
     }
     if (dynamic_cast<const ast::ContinueStmtAST*>(&stmt)) {
         if (loopStack_.empty()) {
             throw std::runtime_error("continue outside loop");
         }
-        emitBranch(loopStack_.back().continueTarget->label());
+        emitBranch(loopStack_.back().continueLabel);
         return;
     }
     if (const auto* ret = dynamic_cast<const ast::ReturnStmtAST*>(&stmt)) {
@@ -353,48 +354,48 @@ IRValue IRBuilder::buildIdentifierExpr(const ast::IdentifierExprAST& expr) {
 IRValue IRBuilder::buildLogicalAnd(const ast::BinaryExprAST& expr) {
     IRValue lhs = buildExpr(expr.lhs());
 
-    BasicBlock& rhsBlock = newBlock("land.rhs");
-    BasicBlock& falseBlock = newBlock("land.false");
-    BasicBlock& mergeBlock = newBlock("land.end");
+    const std::string rhsLabel = newBlock("land.rhs");
+    const std::string falseLabel = newBlock("land.false");
+    const std::string mergeLabel = newBlock("land.end");
 
     IRValue slot = emitUnary(IROp::Alloca, IRValue{-1, IRType::Ptr});
 
-    emitCondBranch(lhs, rhsBlock.label(), falseBlock.label());
+    emitCondBranch(lhs, rhsLabel, falseLabel);
 
-    setInsertPoint(rhsBlock);
+    setInsertPoint(rhsLabel);
     IRValue rhs = buildExpr(expr.rhs());
     emitStore(rhs, slot);
-    emitBranch(mergeBlock.label());
+    emitBranch(mergeLabel);
 
-    setInsertPoint(falseBlock);
+    setInsertPoint(falseLabel);
     emitStore(emitConst(0), slot);
-    emitBranch(mergeBlock.label());
+    emitBranch(mergeLabel);
 
-    setInsertPoint(mergeBlock);
+    setInsertPoint(mergeLabel);
     return emitLoad(slot);
 }
 
 IRValue IRBuilder::buildLogicalOr(const ast::BinaryExprAST& expr) {
     IRValue lhs = buildExpr(expr.lhs());
 
-    BasicBlock& trueBlock = newBlock("lor.true");
-    BasicBlock& rhsBlock = newBlock("lor.rhs");
-    BasicBlock& mergeBlock = newBlock("lor.end");
+    const std::string trueLabel = newBlock("lor.true");
+    const std::string rhsLabel = newBlock("lor.rhs");
+    const std::string mergeLabel = newBlock("lor.end");
 
     IRValue slot = emitUnary(IROp::Alloca, IRValue{-1, IRType::Ptr});
 
-    emitCondBranch(lhs, trueBlock.label(), rhsBlock.label());
+    emitCondBranch(lhs, trueLabel, rhsLabel);
 
-    setInsertPoint(trueBlock);
+    setInsertPoint(trueLabel);
     emitStore(emitConst(1), slot);
-    emitBranch(mergeBlock.label());
+    emitBranch(mergeLabel);
 
-    setInsertPoint(rhsBlock);
+    setInsertPoint(rhsLabel);
     IRValue rhs = buildExpr(expr.rhs());
     emitStore(rhs, slot);
-    emitBranch(mergeBlock.label());
+    emitBranch(mergeLabel);
 
-    setInsertPoint(mergeBlock);
+    setInsertPoint(mergeLabel);
     return emitLoad(slot);
 }
 
@@ -520,24 +521,38 @@ IRValue IRBuilder::newReg(IRType type) {
     return value;
 }
 
-BasicBlock& IRBuilder::newBlock(const std::string& hint) {
+std::string IRBuilder::newBlock(const std::string& hint) {
     if (currentFunction_ == nullptr) {
         throw std::runtime_error("cannot create block outside function");
     }
     const std::string label = hint + "." + std::to_string(currentFunction_->nextBlockId++);
     currentFunction_->blocks.emplace_back(label);
-    return currentFunction_->blocks.back();
+    return label;
 }
 
 BasicBlock& IRBuilder::currentBlock() {
-    if (insertBlock_ == nullptr) {
+    if (insertBlockLabel_.empty()) {
         throw std::runtime_error("no current basic block");
     }
-    return *insertBlock_;
+    for (auto& block : currentFunction_->blocks) {
+        if (block.label() == insertBlockLabel_) {
+            return block;
+        }
+    }
+    throw std::runtime_error("unknown current basic block: " + insertBlockLabel_);
 }
 
-void IRBuilder::setInsertPoint(BasicBlock& block) {
-    insertBlock_ = &block;
+void IRBuilder::setInsertPoint(const std::string& label) {
+    if (currentFunction_ == nullptr) {
+        throw std::runtime_error("cannot set insert point outside function");
+    }
+    for (const auto& block : currentFunction_->blocks) {
+        if (block.label() == label) {
+            insertBlockLabel_ = label;
+            return;
+        }
+    }
+    throw std::runtime_error("unknown basic block label: " + label);
 }
 
 IRValue IRBuilder::getAddressForSymbol(const ast::Symbol& symbol) {
@@ -549,9 +564,7 @@ IRValue IRBuilder::getAddressForSymbol(const ast::Symbol& symbol) {
 }
 
 bool IRBuilder::isConstSymbol(const ast::Symbol& symbol) const {
-    return symbol.hasConstValue ||
-           symbol.kind == ast::SymbolKind::GlobalConst ||
-           symbol.kind == ast::SymbolKind::LocalConst;
+    return symbol.kind == ast::SymbolKind::GlobalConst || symbol.kind == ast::SymbolKind::LocalConst;
 }
 
 std::optional<int> IRBuilder::getConstValue(const ast::Symbol& symbol) const {

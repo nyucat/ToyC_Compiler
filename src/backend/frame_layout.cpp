@@ -14,6 +14,19 @@ int FrameLayout::countLocalVars(const toyc::ir::IRFunction& func) {
     return count;
 }
 
+int FrameLayout::countTempValues(const toyc::ir::IRFunction& func) {
+    std::set<int> ids;
+    for (const auto& block : func.blocks) {
+        for (const auto& inst : block.instructions()) {
+            if (inst.result.has_value() && inst.result->id >= 0 &&
+                inst.op != toyc::ir::IROp::Alloca) {
+                ids.insert(inst.result->id);
+            }
+        }
+    }
+    return static_cast<int>(ids.size());
+}
+
 bool FrameLayout::isLeafFunction(const toyc::ir::IRFunction& func) {
     for (const auto& block : func.blocks) {
         for (const auto& inst : block.instructions()) {
@@ -44,6 +57,7 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func) {
     frame.usedSavedRegs = computeSavedRegs(func);
     
     int localVars = countLocalVars(func);
+    int tempValues = countTempValues(func);
     int savedRegsCount = static_cast<int>(frame.usedSavedRegs.size());
     
     int size = 0;
@@ -55,6 +69,7 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func) {
     size += savedRegsCount * 4;
     
     size += localVars * 4;
+    size += tempValues * 4;
     
     frame.frameSize = alignTo16(size);
     
