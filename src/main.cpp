@@ -1,5 +1,6 @@
 #include "ast/ast.h"
 #include "frontend/parser.h"
+#include "sema/semantic_analyzer.h"
 
 #include <iostream>
 #include <iterator>
@@ -46,9 +47,13 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        std::cout << "# ToyC frontend parsed successfully\n";
-        std::cout << "# code generation is not implemented yet\n";
+        toyc::sema::SemanticAnalyzer analyzer;
+        const toyc::sema::SemanticResult semaResult = analyzer.analyze(*program);
+
+        std::cout << "# ToyC parsed and semantically analyzed successfully\n";
+        std::cout << "# globals=" << semaResult.globalObjects.size() << '\n';
         std::cout << "# opt=" << (options.optimize ? "on" : "off") << '\n';
+        std::cout << "# code generation is not implemented yet\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << ex.what() << '\n';
