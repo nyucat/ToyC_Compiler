@@ -106,6 +106,15 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
     
     RegisterAllocator regAlloc;
     RegMapping regMap = regAlloc.allocate(func, frame, optimize_);
+
+    constValues_.clear();
+    for (const auto& block : func.blocks) {
+        for (const auto& inst : block.instructions()) {
+            if (inst.op == toyc::ir::IROp::Const && inst.result.has_value()) {
+                constValues_[inst.result->id] = inst.immediate;
+            }
+        }
+    }
     
     std::vector<RISCVInstruction> insts;
     exitLabel_ = localBlockLabel(func.name + "_exit");
@@ -268,13 +277,20 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             
         case toyc::ir::IROp::Load: {
             if (inst.result.has_value() && !inst.operands.empty()) {
-                int rd = Reg::T0;
+                const int addrVreg = inst.operands[0].id;
+                auto addrIt = regMap.find(addrVreg);
                 auto rdIt = regMap.find(inst.result->id);
+
+                if (addrIt != regMap.end() && addrIt->second.isReg && rdIt != regMap.end() &&
+                    rdIt->second.isReg && rdIt->second.regOrOffset == addrIt->second.regOrOffset) {
+                    break;
+                }
+
+                int rd = Reg::T0;
                 if (rdIt != regMap.end() && rdIt->second.isReg) {
                     rd = rdIt->second.regOrOffset;
                 }
-                const int addrVreg = inst.operands[0].id;
-                auto addrIt = regMap.find(addrVreg);
+
                 if (addrIt != regMap.end() && addrIt->second.isReg) {
                     if (rd != addrIt->second.regOrOffset) {
                         result.push_back(RISCVInstruction::makeMV(rd, addrIt->second.regOrOffset));
@@ -328,8 +344,28 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
         case toyc::ir::IROp::Add: {
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
-                int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
                 int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+
+                const auto rhsConst = constValues_.find(inst.operands[1].id);
+                if (rhsConst != constValues_.end() && fitsImm12(rhsConst->second)) {
+                    if (rd == rs1) {
+                        result.push_back(RISCVInstruction::makeADDI(rd, rs1, rhsConst->second));
+                    } else {
+                        result.push_back(RISCVInstruction::makeADDI(rd, rs1, rhsConst->second));
+                    }
+                    storeResult(inst.result->id, rd, regMap, result);
+                    break;
+                }
+
+                const auto lhsConst = constValues_.find(inst.operands[0].id);
+                if (lhsConst != constValues_.end() && fitsImm12(lhsConst->second)) {
+                    int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
+                    result.push_back(RISCVInstruction::makeADDI(rd, rs2, lhsConst->second));
+                    storeResult(inst.result->id, rd, regMap, result);
+                    break;
+                }
+
+                int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
                 result.push_back(RISCVInstruction::makeADD(rd, rs1, rs2));
                 storeResult(inst.result->id, rd, regMap, result);
             }

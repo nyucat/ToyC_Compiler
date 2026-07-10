@@ -5,6 +5,7 @@
 #include "backend/register_allocator.h"
 #include "ir/basic_block.h"
 
+#include <map>
 #include <ostream>
 #include <vector>
 
@@ -19,6 +20,7 @@ public:
 private:
     bool optimize_;
     std::string exitLabel_;
+    std::map<int, int> constValues_;
     
     void generateDataSection(const toyc::ir::IRModule& module, std::ostream& out);
     void generateTextSection(const toyc::ir::IRModule& module, std::ostream& out);

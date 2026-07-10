@@ -115,6 +115,18 @@ RegMapping RegisterAllocator::allocateWithRegisters(
         }
     }
 
+    for (const auto& block : func.blocks) {
+        for (const auto& inst : block.instructions()) {
+            if (inst.op != toyc::ir::IROp::Store || inst.operands.size() < 2) {
+                continue;
+            }
+            const auto addrIt = mapping.find(inst.operands[1].id);
+            if (addrIt != mapping.end() && addrIt->second.isReg) {
+                mapping[inst.operands[0].id] = addrIt->second;
+            }
+        }
+    }
+
     return mapping;
 }
 
