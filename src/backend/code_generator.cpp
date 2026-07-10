@@ -240,12 +240,63 @@ void CodeGenerator::generateBasicBlock(
     const RegMapping& regMap,
     std::vector<RISCVInstruction>& insts
 ) {
-    (void)frame;
     insts.push_back(RISCVInstruction::makeLABEL(localBlockLabel(block.label())));
-    
-    for (const auto& irInst : block.instructions()) {
-        auto translated = translateInstruction(irInst, frame, regMap);
-        for (const auto& riscvInst : translated) {
+
+    const std::vector<toyc::ir::IRInstruction>& irInsts = block.instructions();
+    for (std::size_t idx = 0; idx < irInsts.size(); ++idx) {
+        const toyc::ir::IRInstruction& irInst = irInsts[idx];
+
+        if (optimize_ && idx + 1 < irInsts.size()) {
+            const toyc::ir::IRInstruction& nextInst = irInsts[idx + 1];
+            if (nextInst.op == toyc::ir::IROp::CondBranch && !nextInst.operands.empty() &&
+                irInst.result.has_value() &&
+                nextInst.operands[0].id == irInst.result->id &&
+                irInst.operands.size() >= 2) {
+                const int rs1 = getRegOrLoadToTmp(irInst.operands[0].id, regMap, Reg::T3, insts);
+                const int rs2 = getRegOrLoadToTmp(irInst.operands[1].id, regMap, Reg::T4, insts);
+                const std::string trueLabel = localBlockLabel(nextInst.trueLabel);
+                const std::string falseLabel = localBlockLabel(nextInst.falseLabel);
+
+                if (irInst.op == toyc::ir::IROp::ICmpLt) {
+                    insts.push_back(RISCVInstruction::makeBLT(rs1, rs2, trueLabel));
+                    insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                    ++idx;
+                    continue;
+                }
+                if (irInst.op == toyc::ir::IROp::ICmpGt) {
+                    insts.push_back(RISCVInstruction::makeBLT(rs2, rs1, trueLabel));
+                    insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                    ++idx;
+                    continue;
+                }
+                if (irInst.op == toyc::ir::IROp::ICmpEq) {
+                    insts.push_back(RISCVInstruction::makeBEQ(rs1, rs2, trueLabel));
+                    insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                    ++idx;
+                    continue;
+                }
+                if (irInst.op == toyc::ir::IROp::ICmpNe) {
+                    insts.push_back(RISCVInstruction::makeBNE(rs1, rs2, trueLabel));
+                    insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                    ++idx;
+                    continue;
+                }
+                if (irInst.op == toyc::ir::IROp::ICmpLe) {
+                    insts.push_back(RISCVInstruction::makeBGE(rs2, rs1, trueLabel));
+                    insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                    ++idx;
+                    continue;
+                }
+                if (irInst.op == toyc::ir::IROp::ICmpGe) {
+                    insts.push_back(RISCVInstruction::makeBGE(rs1, rs2, trueLabel));
+                    insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                    ++idx;
+                    continue;
+                }
+            }
+        }
+
+        for (const auto& riscvInst : translateInstruction(irInst, frame, regMap)) {
             insts.push_back(riscvInst);
         }
     }
@@ -418,9 +469,10 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
-                result.push_back(RISCVInstruction::makeSUB(Reg::T2, rs1, rs2));
-                result.push_back(RISCVInstruction::makeSLTIU(Reg::T2, Reg::T2, 1));
-                storeResult(inst.result->id, Reg::T2, regMap, result);
+                int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+                result.push_back(RISCVInstruction::makeSUB(rd, rs1, rs2));
+                result.push_back(RISCVInstruction::makeSLTIU(rd, rd, 1));
+                storeResult(inst.result->id, rd, regMap, result);
             }
             break;
         }
@@ -429,9 +481,10 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
-                result.push_back(RISCVInstruction::makeSUB(Reg::T2, rs1, rs2));
-                result.push_back(RISCVInstruction::makeSLTU(Reg::T2, Reg::ZERO, Reg::T2));
-                storeResult(inst.result->id, Reg::T2, regMap, result);
+                int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+                result.push_back(RISCVInstruction::makeSUB(rd, rs1, rs2));
+                result.push_back(RISCVInstruction::makeSLTU(rd, Reg::ZERO, rd));
+                storeResult(inst.result->id, rd, regMap, result);
             }
             break;
         }
@@ -440,8 +493,9 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
-                result.push_back(RISCVInstruction::makeSLT(Reg::T2, rs1, rs2));
-                storeResult(inst.result->id, Reg::T2, regMap, result);
+                int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+                result.push_back(RISCVInstruction::makeSLT(rd, rs1, rs2));
+                storeResult(inst.result->id, rd, regMap, result);
             }
             break;
         }
@@ -450,9 +504,10 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
-                result.push_back(RISCVInstruction::makeSLT(Reg::T2, rs2, rs1));
-                result.push_back(RISCVInstruction::makeXORI(Reg::T2, Reg::T2, 1));
-                storeResult(inst.result->id, Reg::T2, regMap, result);
+                int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+                result.push_back(RISCVInstruction::makeSLT(rd, rs2, rs1));
+                result.push_back(RISCVInstruction::makeXORI(rd, rd, 1));
+                storeResult(inst.result->id, rd, regMap, result);
             }
             break;
         }
@@ -461,8 +516,9 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
-                result.push_back(RISCVInstruction::makeSLT(Reg::T2, rs2, rs1));
-                storeResult(inst.result->id, Reg::T2, regMap, result);
+                int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+                result.push_back(RISCVInstruction::makeSLT(rd, rs2, rs1));
+                storeResult(inst.result->id, rd, regMap, result);
             }
             break;
         }
@@ -471,9 +527,10 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
-                result.push_back(RISCVInstruction::makeSLT(Reg::T2, rs1, rs2));
-                result.push_back(RISCVInstruction::makeXORI(Reg::T2, Reg::T2, 1));
-                storeResult(inst.result->id, Reg::T2, regMap, result);
+                int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+                result.push_back(RISCVInstruction::makeSLT(rd, rs1, rs2));
+                result.push_back(RISCVInstruction::makeXORI(rd, rd, 1));
+                storeResult(inst.result->id, rd, regMap, result);
             }
             break;
         }

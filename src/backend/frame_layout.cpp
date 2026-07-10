@@ -59,11 +59,8 @@ std::set<int> FrameLayout::computeSavedRegs(const toyc::ir::IRFunction& func, bo
 
     if (optimize) {
         const int localVars = countLocalVars(func);
-        const int tempValues = countTempValues(func);
-        const int localRegHeld = std::min(localVars, 10);
-        const int tempRegHeld = std::min(tempValues, 10 - localRegHeld);
-        const int regHeld = localRegHeld + tempRegHeld;
-        for (int i = 0; i < regHeld; ++i) {
+        const int sNeeded = std::min(std::max(localVars, 2), 10);
+        for (int i = 0; i < sNeeded; ++i) {
             usedRegs.insert(18 + i);
         }
     }
@@ -84,8 +81,9 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func, bool optimize) {
     const int localVars = countLocalVars(func);
     const int tempValues = countTempValues(func);
     const int localRegHeld = optimize ? std::min(localVars, 10) : 0;
-    const int tempRegHeld = optimize ? std::min(tempValues, 10 - localRegHeld) : 0;
-    const int regHeld = localRegHeld + tempRegHeld;
+    const int tempRegHeld = optimize && frame.isLeafFunction
+                                ? std::min(tempValues, 16 - localRegHeld)
+                                : (optimize ? std::min(tempValues, 10 - localRegHeld) : 0);
     const int stackLocals = localVars - localRegHeld;
     const int stackTemps = tempValues - tempRegHeld;
 

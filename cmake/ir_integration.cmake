@@ -8,6 +8,7 @@ set(TOYC_IR_SOURCES
     src/optimizer/constant_fold.cpp
     src/optimizer/dead_code.cpp
     src/optimizer/copy_prop.cpp
+    src/optimizer/cse.cpp
     src/optimizer/cfg_simplify.cpp
     src/optimizer/optimizer.cpp
 )

@@ -48,11 +48,13 @@ RegMapping RegisterAllocator::allocateWithRegisters(
     const toyc::ir::IRFunction& func,
     const FrameInfo& frame
 ) {
-    static constexpr int kRegPool[] = {
+    static constexpr int kSavedPool[] = {
         Reg::S2, Reg::S3, Reg::S4, Reg::S5, Reg::S6,
         Reg::S7, Reg::S8, Reg::S9, Reg::S10, Reg::S11,
     };
-    const std::size_t poolSize = sizeof(kRegPool) / sizeof(kRegPool[0]);
+    static constexpr int kTempPool[] = {
+        Reg::T0, Reg::T1, Reg::T2, Reg::T3, Reg::T4, Reg::T5,
+    };
 
     RegMapping mapping;
     int offset = frame.frameSize;
@@ -71,18 +73,26 @@ RegMapping RegisterAllocator::allocateWithRegisters(
         offset = minLocalOffset;
     }
 
-    std::size_t poolIdx = 0;
+    std::size_t savedIdx = 0;
+    std::size_t tempIdx = 0;
 
     auto assignValue = [&](int valueId) {
         if (mapping.find(valueId) != mapping.end()) {
             return;
         }
-        if (poolIdx < poolSize) {
-            mapping[valueId] = RegOrSlot::fromReg(kRegPool[poolIdx++]);
-        } else {
-            offset -= 4;
-            mapping[valueId] = RegOrSlot::fromSlot(offset);
+
+        if (savedIdx < sizeof(kSavedPool) / sizeof(kSavedPool[0])) {
+            mapping[valueId] = RegOrSlot::fromReg(kSavedPool[savedIdx++]);
+            return;
         }
+
+        if (frame.isLeafFunction && tempIdx < sizeof(kTempPool) / sizeof(kTempPool[0])) {
+            mapping[valueId] = RegOrSlot::fromReg(kTempPool[tempIdx++]);
+            return;
+        }
+
+        offset -= 4;
+        mapping[valueId] = RegOrSlot::fromSlot(offset);
     };
 
     for (const auto& block : func.blocks) {
