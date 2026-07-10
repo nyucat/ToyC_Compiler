@@ -74,10 +74,10 @@ int FrameLayout::alignTo16(int size) {
 
 FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func, bool optimize) {
     FrameInfo frame;
-    
+
     frame.isLeafFunction = isLeafFunction(func);
     frame.hasCall = !frame.isLeafFunction;
-    
+
     const int localVars = countLocalVars(func);
     const int tempValues = countTempValues(func);
     const int localRegHeld = optimize ? std::min(localVars, 10) : 0;
@@ -85,51 +85,65 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func, bool optimize) {
                                 ? std::min(tempValues, 16 - localRegHeld)
                                 : (optimize ? std::min(tempValues, 10 - localRegHeld) : 0);
     const int stackLocals = localVars - localRegHeld;
-    const int stackTemps = tempValues - tempRegHeld;
+    const int stackTemps = optimize ? std::max(tempValues - tempRegHeld, 0) : tempValues;
 
     frame.usedSavedRegs = computeSavedRegs(func, optimize);
-    
+
     const int outgoingStackArgs = countMaxOutgoingStackArgs(func);
-    int savedRegsCount = static_cast<int>(frame.usedSavedRegs.size());
-    
+    const int savedRegsCount = static_cast<int>(frame.usedSavedRegs.size());
+
     int size = 0;
-    
+
     if (!frame.isLeafFunction) {
         size += 4;
     }
-    
+
     size += savedRegsCount * 4;
-    
     size += stackLocals * 4;
     size += stackTemps * 4;
     size += outgoingStackArgs * 4;
-    
+
     frame.frameSize = alignTo16(size);
     frame.outgoingArgBytes = outgoingStackArgs * 4;
-    
+    frame.stackSlotLimit = frame.outgoingArgBytes;
+
     int offset = frame.frameSize;
-    
+
     if (!frame.isLeafFunction) {
         offset -= 4;
         frame.raOffset = offset;
     }
-    
+
     frame.savedRegOffsets.clear();
     for (int reg : frame.usedSavedRegs) {
         offset -= 4;
         frame.savedRegOffsets.push_back(offset);
     }
-    
-    int localVarId = 0;
+
+    int stackLocalCount = 0;
+    int allocaIndex = 0;
     for (const auto& block : func.blocks) {
         for (const auto& inst : block.instructions()) {
-            if (inst.op == toyc::ir::IROp::Alloca && inst.result.has_value()) {
+            if (inst.op != toyc::ir::IROp::Alloca || !inst.result.has_value()) {
+                continue;
+            }
+
+            const bool inRegister = optimize && allocaIndex < localRegHeld;
+            if (!inRegister) {
                 offset -= 4;
                 frame.localVarOffsets[inst.result->id] = offset;
+                stackLocalCount++;
             }
+            allocaIndex++;
         }
     }
-    
+
+    frame.spillOffsets.clear();
+    for (int i = 0; i < stackTemps; ++i) {
+        offset -= 4;
+        frame.spillOffsets.push_back(offset);
+    }
+
     return frame;
 }
 

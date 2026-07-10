@@ -1,2 +1,5 @@
-int sub_test(int a, int b) { return a - b; }
-int main() { return sub_test(10, 3); }
+int main() {
+  int a = 10;
+  int b = 3;
+  return a - b;
+}

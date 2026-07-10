@@ -23,6 +23,8 @@ RegMapping RegisterAllocator::allocateToStack(
             minLocalOffset = std::min(minLocalOffset, entry.second);
         }
         offset = minLocalOffset;
+    } else if (!frame.spillOffsets.empty()) {
+        offset = frame.spillOffsets.back();
     }
 
     for (const auto& block : func.blocks) {
@@ -46,7 +48,8 @@ RegMapping RegisterAllocator::allocateToStack(
 
 RegMapping RegisterAllocator::allocateWithRegisters(
     const toyc::ir::IRFunction& func,
-    const FrameInfo& frame
+    const FrameInfo& frame,
+    bool& fallback
 ) {
     static constexpr int kSavedPool[] = {
         Reg::S2, Reg::S3, Reg::S4, Reg::S5, Reg::S6,
@@ -57,24 +60,19 @@ RegMapping RegisterAllocator::allocateWithRegisters(
     };
 
     RegMapping mapping;
-    int offset = frame.frameSize;
-
-    offset -= static_cast<int>(frame.usedSavedRegs.size() * 4);
-
-    if (!frame.isLeafFunction) {
-        offset -= 4;
-    }
-
-    if (!frame.localVarOffsets.empty()) {
-        int minLocalOffset = frame.frameSize;
-        for (const auto& entry : frame.localVarOffsets) {
-            minLocalOffset = std::min(minLocalOffset, entry.second);
-        }
-        offset = minLocalOffset;
-    }
+    fallback = false;
+    std::size_t spillIdx = 0;
 
     std::size_t savedIdx = 0;
     std::size_t tempIdx = 0;
+
+    auto assignSpill = [&](int valueId) {
+        if (spillIdx >= frame.spillOffsets.size()) {
+            fallback = true;
+            return;
+        }
+        mapping[valueId] = RegOrSlot::fromSlot(frame.spillOffsets[spillIdx++]);
+    };
 
     auto assignValue = [&](int valueId) {
         if (mapping.find(valueId) != mapping.end()) {
@@ -91,14 +89,16 @@ RegMapping RegisterAllocator::allocateWithRegisters(
             return;
         }
 
-        offset -= 4;
-        mapping[valueId] = RegOrSlot::fromSlot(offset);
+        assignSpill(valueId);
     };
 
     for (const auto& block : func.blocks) {
         for (const auto& inst : block.instructions()) {
             if (inst.op == toyc::ir::IROp::Alloca && inst.result.has_value() && inst.result->id >= 0) {
                 assignValue(inst.result->id);
+                if (fallback) {
+                    return {};
+                }
             }
         }
     }
@@ -108,6 +108,9 @@ RegMapping RegisterAllocator::allocateWithRegisters(
             if (inst.result.has_value() && inst.result->id >= 0 &&
                 inst.op != toyc::ir::IROp::Alloca) {
                 assignValue(inst.result->id);
+                if (fallback) {
+                    return {};
+                }
             }
         }
     }
@@ -133,10 +136,16 @@ RegMapping RegisterAllocator::allocate(
     const FrameInfo& frame,
     bool optimize
 ) {
-    if (optimize) {
-        return allocateWithRegisters(func, frame);
+    if (!optimize) {
+        return allocateToStack(func, frame);
     }
-    return allocateToStack(func, frame);
+
+    bool fallback = false;
+    RegMapping regMap = allocateWithRegisters(func, frame, fallback);
+    if (fallback) {
+        return allocateToStack(func, frame);
+    }
+    return regMap;
 }
 
 } // namespace toyc::backend

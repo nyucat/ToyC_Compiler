@@ -12,7 +12,9 @@ struct FrameInfo {
     int frameSize = 0;
     int raOffset = 0;
     int outgoingArgBytes = 0;
+    int stackSlotLimit = 0;
     std::vector<int> savedRegOffsets;
+    std::vector<int> spillOffsets;
     std::map<int, int> localVarOffsets;
     std::set<int> usedSavedRegs;
     bool isLeafFunction = true;

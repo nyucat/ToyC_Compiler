@@ -44,7 +44,8 @@ private:
 
     RegMapping allocateWithRegisters(
         const toyc::ir::IRFunction& func,
-        const FrameInfo& frame
+        const FrameInfo& frame,
+        bool& fallback
     );
 };
 

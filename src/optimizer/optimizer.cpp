@@ -1,13 +1,7 @@
 #include "optimizer/optimizer.h"
 
-#include "optimizer/cfg_simplify.h"
 #include "optimizer/constant_fold.h"
-#include "optimizer/copy_prop.h"
-#include "optimizer/cse.h"
 #include "optimizer/dead_code.h"
-
-#include <memory>
-#include <vector>
 
 namespace toyc::optimizer {
 
@@ -16,14 +10,10 @@ void runOptimizationPipeline(toyc::ir::IRModule& module, bool enableOpt) {
         return;
     }
 
-    CopyPropPass copyProp;
-    CsePass cse;
     ConstantFoldPass constantFold;
     DeadCodeEliminationPass deadCode;
 
-    for (int round = 0; round < 4; ++round) {
-        copyProp.run(module);
-        cse.run(module);
+    for (int round = 0; round < 2; ++round) {
         constantFold.run(module);
         deadCode.run(module);
     }
