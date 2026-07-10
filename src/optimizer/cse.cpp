@@ -4,6 +4,7 @@
 
 #include <map>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 namespace toyc::optimizer {
@@ -13,25 +14,6 @@ namespace {
 using namespace toyc::ir;
 
 using ExprKey = std::tuple<IROp, int, int>;
-
-void replaceAllUses(IRFunction& function, int fromId, int toId) {
-    if (fromId == toId) {
-        return;
-    }
-
-    for (auto& block : function.blocks) {
-        for (auto& inst : block.instructions()) {
-            for (IRValue& operand : inst.operands) {
-                if (operand.id == fromId) {
-                    operand.id = toId;
-                }
-            }
-            if (inst.result.has_value() && inst.result->id == fromId) {
-                inst.result->id = toId;
-            }
-        }
-    }
-}
 
 bool isCseCandidate(IROp op) {
     switch (op) {
@@ -65,21 +47,38 @@ ExprKey makeKey(const IRInstruction& inst) {
     return ExprKey{inst.op, lhs, rhs};
 }
 
+int resolveAlias(const std::unordered_map<int, int>& aliases, int id) {
+    int current = id;
+    std::unordered_map<int, int>::const_iterator it = aliases.find(current);
+    while (it != aliases.end() && it->second != current) {
+        current = it->second;
+        it = aliases.find(current);
+    }
+    return current;
+}
+
 } // namespace
 
 void CsePass::run(IRModule& module) {
     for (auto& function : module.functions) {
         for (auto& block : function.blocks) {
             std::map<ExprKey, int> available;
+            std::unordered_map<int, int> aliases;
             std::vector<IRInstruction> kept;
             kept.reserve(block.instructions().size());
 
             for (auto& inst : block.instructions()) {
+                for (IRValue& operand : inst.operands) {
+                    if (operand.id >= 0) {
+                        operand.id = resolveAlias(aliases, operand.id);
+                    }
+                }
+
                 if (inst.result.has_value() && inst.operands.size() == 2 && isCseCandidate(inst.op)) {
                     const ExprKey key = makeKey(inst);
                     const auto it = available.find(key);
                     if (it != available.end()) {
-                        replaceAllUses(function, inst.result->id, it->second);
+                        aliases[inst.result->id] = resolveAlias(aliases, it->second);
                         continue;
                     }
                     available.emplace(key, inst.result->id);
@@ -87,6 +86,7 @@ void CsePass::run(IRModule& module) {
 
                 if (inst.op == IROp::Call || inst.op == IROp::Store || inst.op == IROp::GlobalStore) {
                     available.clear();
+                    aliases.clear();
                 }
 
                 kept.push_back(std::move(inst));

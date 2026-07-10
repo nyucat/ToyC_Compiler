@@ -11,23 +11,14 @@ namespace {
 
 using namespace toyc::ir;
 
-void replaceAllUses(IRFunction& function, int fromId, int toId) {
-    if (fromId == toId) {
-        return;
+int resolveAlias(const std::unordered_map<int, int>& aliases, int id) {
+    int current = id;
+    std::unordered_map<int, int>::const_iterator it = aliases.find(current);
+    while (it != aliases.end() && it->second != current) {
+        current = it->second;
+        it = aliases.find(current);
     }
-
-    for (auto& block : function.blocks) {
-        for (auto& inst : block.instructions()) {
-            for (IRValue& operand : inst.operands) {
-                if (operand.id == fromId) {
-                    operand.id = toId;
-                }
-            }
-            if (inst.result.has_value() && inst.result->id == fromId) {
-                inst.result->id = toId;
-            }
-        }
-    }
+    return current;
 }
 
 } // namespace
@@ -36,11 +27,18 @@ void CopyPropPass::run(IRModule& module) {
     for (auto& function : module.functions) {
         for (auto& block : function.blocks) {
             std::unordered_map<int, int> slotValues;
+            std::unordered_map<int, int> aliases;
 
             std::vector<IRInstruction> kept;
             kept.reserve(block.instructions().size());
 
             for (auto& inst : block.instructions()) {
+                for (IRValue& operand : inst.operands) {
+                    if (operand.id >= 0) {
+                        operand.id = resolveAlias(aliases, operand.id);
+                    }
+                }
+
                 if (inst.op == IROp::Store && inst.operands.size() >= 2) {
                     slotValues[inst.operands[1].id] = inst.operands[0].id;
                     kept.push_back(std::move(inst));
@@ -50,7 +48,7 @@ void CopyPropPass::run(IRModule& module) {
                 if (inst.op == IROp::Load && inst.result.has_value() && !inst.operands.empty()) {
                     const auto it = slotValues.find(inst.operands[0].id);
                     if (it != slotValues.end()) {
-                        replaceAllUses(function, inst.result->id, it->second);
+                        aliases[inst.result->id] = resolveAlias(aliases, it->second);
                         continue;
                     }
                 }
