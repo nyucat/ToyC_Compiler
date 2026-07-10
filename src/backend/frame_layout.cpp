@@ -53,15 +53,15 @@ bool FrameLayout::isLeafFunction(const toyc::ir::IRFunction& func) {
 }
 
 std::set<int> FrameLayout::computeSavedRegs(const toyc::ir::IRFunction& func, bool optimize) {
+    (void)func;
+
     std::set<int> usedRegs;
     usedRegs.insert(8);
     usedRegs.insert(9);
 
     if (optimize) {
-        const int localVars = countLocalVars(func);
-        const int sNeeded = std::min(std::max(localVars, 2), 10);
-        for (int i = 0; i < sNeeded; ++i) {
-            usedRegs.insert(18 + i);
+        for (int reg = 18; reg <= 27; ++reg) {
+            usedRegs.insert(reg);
         }
     }
 
@@ -80,7 +80,7 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func, bool optimize) {
 
     const int localVars = countLocalVars(func);
     const int tempValues = countTempValues(func);
-    const int localRegHeld = optimize ? std::min(localVars, 10) : 0;
+    const int localRegHeld = 0;
     const int tempRegHeld = optimize && frame.isLeafFunction
                                 ? std::min(tempValues, 16 - localRegHeld)
                                 : (optimize ? std::min(tempValues, 10 - localRegHeld) : 0);
@@ -115,12 +115,11 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func, bool optimize) {
     }
 
     frame.savedRegOffsets.clear();
-    for (int reg : frame.usedSavedRegs) {
+    for (int i = 0; i < savedRegsCount; ++i) {
         offset -= 4;
         frame.savedRegOffsets.push_back(offset);
     }
 
-    int stackLocalCount = 0;
     int allocaIndex = 0;
     for (const auto& block : func.blocks) {
         for (const auto& inst : block.instructions()) {
@@ -132,7 +131,6 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func, bool optimize) {
             if (!inRegister) {
                 offset -= 4;
                 frame.localVarOffsets[inst.result->id] = offset;
-                stackLocalCount++;
             }
             allocaIndex++;
         }

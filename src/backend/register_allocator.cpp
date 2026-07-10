@@ -2,6 +2,9 @@
 
 #include "backend/riscv_instruction.h"
 
+#include <algorithm>
+#include <cstddef>
+
 namespace toyc::backend {
 
 RegMapping RegisterAllocator::allocateToStack(
@@ -104,17 +107,6 @@ RegMapping RegisterAllocator::allocateWithRegisters(
 
     for (const auto& block : func.blocks) {
         for (const auto& inst : block.instructions()) {
-            if (inst.op == toyc::ir::IROp::Alloca && inst.result.has_value() && inst.result->id >= 0) {
-                assignValue(inst.result->id);
-                if (fallback) {
-                    return {};
-                }
-            }
-        }
-    }
-
-    for (const auto& block : func.blocks) {
-        for (const auto& inst : block.instructions()) {
             if (inst.result.has_value() && inst.result->id >= 0 &&
                 inst.op != toyc::ir::IROp::Alloca) {
                 assignValue(inst.result->id);
@@ -123,6 +115,10 @@ RegMapping RegisterAllocator::allocateWithRegisters(
                 }
             }
         }
+    }
+
+    for (const auto& entry : frame.localVarOffsets) {
+        mapping[entry.first] = RegOrSlot::fromSlot(entry.second);
     }
 
     for (const auto& block : func.blocks) {
