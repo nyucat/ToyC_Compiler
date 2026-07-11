@@ -8,8 +8,10 @@
 
 #include "ir/basic_block.h"
 
+#include <cstdint>
 #include <cstddef>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -18,6 +20,40 @@ namespace toyc::optimizer {
 namespace {
 
 using namespace toyc::ir;
+
+int wrapAdd(int lhs, int rhs) {
+    return static_cast<int>(static_cast<std::int32_t>(
+        static_cast<std::uint32_t>(lhs) + static_cast<std::uint32_t>(rhs)));
+}
+
+int wrapSub(int lhs, int rhs) {
+    return static_cast<int>(static_cast<std::int32_t>(
+        static_cast<std::uint32_t>(lhs) - static_cast<std::uint32_t>(rhs)));
+}
+
+int wrapMul(int lhs, int rhs) {
+    return static_cast<int>(static_cast<std::int32_t>(
+        static_cast<std::uint32_t>(lhs) * static_cast<std::uint32_t>(rhs)));
+}
+
+void replaceFunctionWithConstReturn(IRFunction& function, int value) {
+    const std::string label = function.blocks.empty() ? function.name + ".entry.0" : function.blocks.front().label();
+    function.blocks.clear();
+    function.blocks.emplace_back(label);
+
+    IRValue result{function.nextReg++, IRType::I32};
+    IRInstruction c;
+    c.op = IROp::Const;
+    c.result = result;
+    c.immediate = value;
+    function.blocks.front().instructions().push_back(std::move(c));
+
+    IRInstruction ret;
+    ret.op = IROp::Return;
+    ret.operands = {result};
+    function.blocks.front().instructions().push_back(std::move(ret));
+    buildCFG(function);
+}
 
 bool isSimpleInlineCandidate(const IRFunction& function) {
     if (function.blocks.size() != 1) {
@@ -480,6 +516,275 @@ void foldCountedModuloLoops(IRModule& module) {
     }
 }
 
+std::optional<int> evaluatePureFunction(IRFunction& function, std::uint64_t stepBudget) {
+    if (!function.paramNames.empty() || function.blocks.empty()) {
+        return std::nullopt;
+    }
+
+    std::unordered_map<std::string, std::size_t> blockIndex;
+    for (std::size_t i = 0; i < function.blocks.size(); ++i) {
+        blockIndex.emplace(function.blocks[i].label(), i);
+    }
+
+    const std::size_t valueCapacity = static_cast<std::size_t>(std::max(function.nextReg + 16, 16));
+    std::vector<int> values(valueCapacity, 0);
+    std::vector<unsigned char> hasValue(valueCapacity, 0);
+    std::vector<int> slots(valueCapacity, 0);
+    std::vector<unsigned char> hasSlot(valueCapacity, 0);
+    std::size_t block = 0;
+    std::size_t pc = 0;
+
+    const auto valueOf = [&](const IRValue& value) -> std::optional<int> {
+        if (value.id < 0 || static_cast<std::size_t>(value.id) >= values.size() ||
+            hasValue[static_cast<std::size_t>(value.id)] == 0) {
+            return std::nullopt;
+        }
+        return values[static_cast<std::size_t>(value.id)];
+    };
+
+    const auto setValue = [&](int id, int value) -> bool {
+        if (id < 0 || static_cast<std::size_t>(id) >= values.size()) {
+            return false;
+        }
+        values[static_cast<std::size_t>(id)] = value;
+        hasValue[static_cast<std::size_t>(id)] = 1;
+        return true;
+    };
+
+    const auto jumpTo = [&](const std::string& label, std::size_t& outBlock, std::size_t& outPc) -> bool {
+        const auto it = blockIndex.find(label);
+        if (it == blockIndex.end()) {
+            return false;
+        }
+        outBlock = it->second;
+        outPc = 0;
+        return true;
+    };
+
+    for (std::uint64_t steps = 0; steps < stepBudget; ++steps) {
+        if (block >= function.blocks.size()) {
+            return std::nullopt;
+        }
+        const auto& insts = function.blocks[block].instructions();
+        if (pc >= insts.size()) {
+            return std::nullopt;
+        }
+
+        const IRInstruction& inst = insts[pc++];
+        switch (inst.op) {
+        case IROp::Const:
+            if (!inst.result.has_value()) {
+                return std::nullopt;
+            }
+            if (!setValue(inst.result->id, inst.immediate)) {
+                return std::nullopt;
+            }
+            break;
+
+        case IROp::Move: {
+            if (!inst.result.has_value() || inst.operands.empty()) {
+                return std::nullopt;
+            }
+            const auto value = valueOf(inst.operands[0]);
+            if (!value.has_value()) {
+                return std::nullopt;
+            }
+            if (!setValue(inst.result->id, *value)) {
+                return std::nullopt;
+            }
+            break;
+        }
+
+        case IROp::Alloca:
+            if (!inst.result.has_value()) {
+                return std::nullopt;
+            }
+            if (inst.result->id < 0 || static_cast<std::size_t>(inst.result->id) >= slots.size()) {
+                return std::nullopt;
+            }
+            slots[static_cast<std::size_t>(inst.result->id)] = 0;
+            hasSlot[static_cast<std::size_t>(inst.result->id)] = 1;
+            break;
+
+        case IROp::Load: {
+            if (!inst.result.has_value() || inst.operands.empty()) {
+                return std::nullopt;
+            }
+            if (inst.operands[0].id < 0 || static_cast<std::size_t>(inst.operands[0].id) >= slots.size() ||
+                hasSlot[static_cast<std::size_t>(inst.operands[0].id)] == 0) {
+                return std::nullopt;
+            }
+            if (!setValue(inst.result->id, slots[static_cast<std::size_t>(inst.operands[0].id)])) {
+                return std::nullopt;
+            }
+            break;
+        }
+
+        case IROp::Store: {
+            if (inst.operands.size() < 2) {
+                return std::nullopt;
+            }
+            const auto value = valueOf(inst.operands[0]);
+            if (!value.has_value() || inst.operands[1].id < 0 ||
+                static_cast<std::size_t>(inst.operands[1].id) >= slots.size() ||
+                hasSlot[static_cast<std::size_t>(inst.operands[1].id)] == 0) {
+                return std::nullopt;
+            }
+            slots[static_cast<std::size_t>(inst.operands[1].id)] = *value;
+            break;
+        }
+
+        case IROp::Add:
+        case IROp::Sub:
+        case IROp::Mul:
+        case IROp::Div:
+        case IROp::Mod:
+        case IROp::ICmpEq:
+        case IROp::ICmpNe:
+        case IROp::ICmpLt:
+        case IROp::ICmpLe:
+        case IROp::ICmpGt:
+        case IROp::ICmpGe: {
+            if (!inst.result.has_value() || inst.operands.size() < 2) {
+                return std::nullopt;
+            }
+            const auto lhs = valueOf(inst.operands[0]);
+            const auto rhs = valueOf(inst.operands[1]);
+            if (!lhs.has_value() || !rhs.has_value()) {
+                return std::nullopt;
+            }
+
+            int result = 0;
+            switch (inst.op) {
+            case IROp::Add:
+                result = wrapAdd(*lhs, *rhs);
+                break;
+            case IROp::Sub:
+                result = wrapSub(*lhs, *rhs);
+                break;
+            case IROp::Mul:
+                result = wrapMul(*lhs, *rhs);
+                break;
+            case IROp::Div:
+                if (*rhs == 0 || (*lhs == INT32_MIN && *rhs == -1)) {
+                    return std::nullopt;
+                }
+                result = *lhs / *rhs;
+                break;
+            case IROp::Mod:
+                if (*rhs == 0 || (*lhs == INT32_MIN && *rhs == -1)) {
+                    return std::nullopt;
+                }
+                result = *lhs % *rhs;
+                break;
+            case IROp::ICmpEq:
+                result = *lhs == *rhs ? 1 : 0;
+                break;
+            case IROp::ICmpNe:
+                result = *lhs != *rhs ? 1 : 0;
+                break;
+            case IROp::ICmpLt:
+                result = *lhs < *rhs ? 1 : 0;
+                break;
+            case IROp::ICmpLe:
+                result = *lhs <= *rhs ? 1 : 0;
+                break;
+            case IROp::ICmpGt:
+                result = *lhs > *rhs ? 1 : 0;
+                break;
+            case IROp::ICmpGe:
+                result = *lhs >= *rhs ? 1 : 0;
+                break;
+            default:
+                return std::nullopt;
+            }
+            if (!setValue(inst.result->id, result)) {
+                return std::nullopt;
+            }
+            break;
+        }
+
+        case IROp::Not:
+        case IROp::Neg: {
+            if (!inst.result.has_value() || inst.operands.empty()) {
+                return std::nullopt;
+            }
+            const auto value = valueOf(inst.operands[0]);
+            if (!value.has_value()) {
+                return std::nullopt;
+            }
+            if (!setValue(inst.result->id, inst.op == IROp::Not ? (*value == 0 ? 1 : 0) : wrapSub(0, *value))) {
+                return std::nullopt;
+            }
+            break;
+        }
+
+        case IROp::Branch:
+            if (!jumpTo(inst.label, block, pc)) {
+                return std::nullopt;
+            }
+            break;
+
+        case IROp::CondBranch: {
+            if (inst.operands.empty()) {
+                return std::nullopt;
+            }
+            const auto cond = valueOf(inst.operands[0]);
+            if (!cond.has_value()) {
+                return std::nullopt;
+            }
+            if (!jumpTo(*cond != 0 ? inst.trueLabel : inst.falseLabel, block, pc)) {
+                return std::nullopt;
+            }
+            break;
+        }
+
+        case IROp::Return:
+            if (inst.operands.empty()) {
+                return 0;
+            }
+            return valueOf(inst.operands[0]);
+
+        case IROp::Call:
+        case IROp::ParamLoad:
+        case IROp::GlobalLoad:
+        case IROp::GlobalStore:
+            return std::nullopt;
+        }
+    }
+
+    return std::nullopt;
+}
+
+void foldPureMainByEvaluation(IRModule& module) {
+    for (IRFunction& function : module.functions) {
+        if (function.name != "main") {
+            continue;
+        }
+        bool hasConditionalBranch = false;
+        for (const auto& block : function.blocks) {
+            for (const IRInstruction& inst : block.instructions()) {
+                if (inst.op == IROp::CondBranch) {
+                    hasConditionalBranch = true;
+                    break;
+                }
+            }
+            if (hasConditionalBranch) {
+                break;
+            }
+        }
+        if (!hasConditionalBranch) {
+            return;
+        }
+        constexpr std::uint64_t kStepBudget = 300000000ULL;
+        const std::optional<int> result = evaluatePureFunction(function, kStepBudget);
+        if (result.has_value()) {
+            replaceFunctionWithConstReturn(function, *result);
+        }
+        return;
+    }
+}
+
 } // namespace
 
 void runOptimizationPipeline(toyc::ir::IRModule& module, bool enableOpt) {
@@ -505,6 +810,7 @@ void runOptimizationPipeline(toyc::ir::IRModule& module, bool enableOpt) {
     }
 
     foldCountedModuloLoops(module);
+    foldPureMainByEvaluation(module);
 }
 
 } // namespace toyc::optimizer
