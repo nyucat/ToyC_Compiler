@@ -119,6 +119,7 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
     RegMapping regMap = regAlloc.allocate(func, frame, optimize_);
 
     constValues_.clear();
+    currentFunctionName_ = func.name;
     nextLocalLabelId_ = 0;
     useCounts_.clear();
     for (const auto& block : func.blocks) {
@@ -535,7 +536,9 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
                     const int shift = powerOfTwoShift(divisor);
                     if (shift >= 0 && divisor - 1 <= kImm12Max && -divisor >= kImm12Min) {
                         result.push_back(RISCVInstruction::makeANDI(rd, rs1, divisor - 1));
-                        const std::string doneLabel = ".Lrem_pow2_done_" + std::to_string(nextLocalLabelId_++);
+                        const std::string doneLabel = localBlockLabel(
+                            currentFunctionName_ + ".rem_pow2_done." + std::to_string(nextLocalLabelId_++)
+                        );
                         result.push_back(RISCVInstruction::makeBGE(rs1, Reg::ZERO, doneLabel));
                         result.push_back(RISCVInstruction::makeBEQ(rd, Reg::ZERO, doneLabel));
                         result.push_back(RISCVInstruction::makeADDI(rd, rd, -divisor));

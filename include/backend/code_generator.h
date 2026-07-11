@@ -20,6 +20,7 @@ public:
 private:
     bool optimize_;
     std::string exitLabel_;
+    std::string currentFunctionName_;
     int nextLocalLabelId_ = 0;
     std::map<int, int> constValues_;
     std::map<int, int> useCounts_;
