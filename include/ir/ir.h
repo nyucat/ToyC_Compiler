@@ -17,6 +17,7 @@ enum class IRType {
 
 enum class IROp {
     Const,
+    Move,
     Alloca,
     Load,
     Store,

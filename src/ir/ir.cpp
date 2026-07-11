@@ -10,6 +10,8 @@ const char* toString(IROp op) {
     switch (op) {
     case IROp::Const:
         return "const";
+    case IROp::Move:
+        return "move";
     case IROp::Alloca:
         return "alloca";
     case IROp::Load:
@@ -89,6 +91,12 @@ void dumpInstruction(std::ostream& out, const IRInstruction& inst) {
     switch (inst.op) {
     case IROp::Const:
         out << ' ' << inst.immediate;
+        break;
+    case IROp::Move:
+        if (!inst.operands.empty()) {
+            out << ' ';
+            dumpValue(out, inst.operands.front());
+        }
         break;
     case IROp::Alloca:
         out << ' ' << toString(inst.result->type);

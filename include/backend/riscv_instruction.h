@@ -107,6 +107,12 @@ public:
         inst.addReg(rd).addReg(rs).addImm(imm);
         return inst;
     }
+
+    static RISCVInstruction makeANDI(int rd, int rs, int imm) {
+        RISCVInstruction inst(RISCVOp::ANDI);
+        inst.addReg(rd).addReg(rs).addImm(imm);
+        return inst;
+    }
     
     static RISCVInstruction makeSUB(int rd, int rs1, int rs2) {
         RISCVInstruction inst(RISCVOp::SUB);

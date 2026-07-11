@@ -63,6 +63,7 @@ void CsePass::run(IRModule& module) {
     for (auto& function : module.functions) {
         for (auto& block : function.blocks) {
             std::map<ExprKey, int> available;
+            std::unordered_map<std::string, int> availableGlobals;
             std::unordered_map<int, int> aliases;
             std::vector<IRInstruction> kept;
             kept.reserve(block.instructions().size());
@@ -84,9 +85,26 @@ void CsePass::run(IRModule& module) {
                     available.emplace(key, inst.result->id);
                 }
 
-                if (inst.op == IROp::Call || inst.op == IROp::Store || inst.op == IROp::GlobalStore) {
+                if (inst.op == IROp::GlobalLoad && inst.result.has_value()) {
+                    const auto it = availableGlobals.find(inst.callee);
+                    if (it != availableGlobals.end()) {
+                        aliases[inst.result->id] = resolveAlias(aliases, it->second);
+                        continue;
+                    }
+                    availableGlobals.emplace(inst.callee, inst.result->id);
+                }
+
+                if (inst.op == IROp::Call) {
                     available.clear();
                     aliases.clear();
+                    availableGlobals.clear();
+                } else if (inst.op == IROp::Store) {
+                    available.clear();
+                    aliases.clear();
+                } else if (inst.op == IROp::GlobalStore) {
+                    available.clear();
+                    aliases.clear();
+                    availableGlobals.erase(inst.callee);
                 }
 
                 kept.push_back(std::move(inst));

@@ -45,6 +45,11 @@ void CopyPropPass::run(IRModule& module) {
                     continue;
                 }
 
+                if (inst.op == IROp::Move && inst.result.has_value() && !inst.operands.empty()) {
+                    aliases[inst.result->id] = resolveAlias(aliases, inst.operands[0].id);
+                    continue;
+                }
+
                 if (inst.op == IROp::Load && inst.result.has_value() && !inst.operands.empty()) {
                     const auto it = slotValues.find(inst.operands[0].id);
                     if (it != slotValues.end()) {

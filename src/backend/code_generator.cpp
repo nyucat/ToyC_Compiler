@@ -17,6 +17,17 @@ constexpr int kImm12Max = 2047;
     return value >= kImm12Min && value <= kImm12Max;
 }
 
+[[nodiscard]] int powerOfTwoShift(int value) {
+    if (value <= 0 || (value & (value - 1)) != 0) {
+        return -1;
+    }
+    int shift = 0;
+    while ((1 << shift) != value) {
+        ++shift;
+    }
+    return shift;
+}
+
 void emitLoadFromSp(int rd, int offset, std::vector<RISCVInstruction>& insts) {
     if (fitsImm12(offset)) {
         insts.push_back(RISCVInstruction::makeLW(rd, offset, Reg::SP));
@@ -108,6 +119,7 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
     RegMapping regMap = regAlloc.allocate(func, frame, optimize_);
 
     constValues_.clear();
+    nextLocalLabelId_ = 0;
     useCounts_.clear();
     for (const auto& block : func.blocks) {
         for (const auto& inst : block.instructions()) {
@@ -357,6 +369,14 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
             }
             break;
         }
+
+        case toyc::ir::IROp::Move: {
+            if (inst.result.has_value() && !inst.operands.empty()) {
+                const int src = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
+                storeResult(inst.result->id, src, regMap, result);
+            }
+            break;
+        }
         
         case toyc::ir::IROp::Alloca:
             break;
@@ -470,8 +490,23 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
         case toyc::ir::IROp::Mul: {
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
-                int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
                 int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+
+                const auto rhsConst = constValues_.find(inst.operands[1].id);
+                if (rhsConst != constValues_.end()) {
+                    const int shift = powerOfTwoShift(rhsConst->second);
+                    if (shift >= 0) {
+                        if (shift == 0) {
+                            storeResult(inst.result->id, rs1, regMap, result);
+                        } else {
+                            result.push_back(RISCVInstruction(RISCVOp::SLLI).addReg(rd).addReg(rs1).addImm(shift));
+                            storeResult(inst.result->id, rd, regMap, result);
+                        }
+                        break;
+                    }
+                }
+
+                int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
                 result.push_back(RISCVInstruction::makeMUL(rd, rs1, rs2));
                 storeResult(inst.result->id, rd, regMap, result);
             }
@@ -492,8 +527,25 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
         case toyc::ir::IROp::Mod: {
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
-                int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
                 int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+
+                const auto rhsConst = constValues_.find(inst.operands[1].id);
+                if (rhsConst != constValues_.end()) {
+                    const int divisor = rhsConst->second;
+                    const int shift = powerOfTwoShift(divisor);
+                    if (shift >= 0 && divisor - 1 <= kImm12Max && -divisor >= kImm12Min) {
+                        result.push_back(RISCVInstruction::makeANDI(rd, rs1, divisor - 1));
+                        const std::string doneLabel = ".Lrem_pow2_done_" + std::to_string(nextLocalLabelId_++);
+                        result.push_back(RISCVInstruction::makeBGE(rs1, Reg::ZERO, doneLabel));
+                        result.push_back(RISCVInstruction::makeBEQ(rd, Reg::ZERO, doneLabel));
+                        result.push_back(RISCVInstruction::makeADDI(rd, rd, -divisor));
+                        result.push_back(RISCVInstruction::makeLABEL(doneLabel));
+                        storeResult(inst.result->id, rd, regMap, result);
+                        break;
+                    }
+                }
+
+                int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
                 result.push_back(RISCVInstruction::makeREM(rd, rs1, rs2));
                 storeResult(inst.result->id, rd, regMap, result);
             }
