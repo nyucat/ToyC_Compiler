@@ -48,6 +48,7 @@ static std::string opToString(RISCVOp op) {
         case RISCVOp::ADDI: return "addi";
         case RISCVOp::SUB: return "sub";
         case RISCVOp::MUL: return "mul";
+        case RISCVOp::MULHU: return "mulhu";
         case RISCVOp::DIV: return "div";
         case RISCVOp::REM: return "rem";
         case RISCVOp::AND: return "and";
@@ -118,6 +119,7 @@ std::string RISCVInstruction::format() const {
         case RISCVOp::ADD:
         case RISCVOp::SUB:
         case RISCVOp::MUL:
+        case RISCVOp::MULHU:
         case RISCVOp::DIV:
         case RISCVOp::REM:
         case RISCVOp::AND:

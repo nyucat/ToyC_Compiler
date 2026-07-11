@@ -30,7 +30,7 @@ private:
     int countTempValues(const toyc::ir::IRFunction& func);
     int countMaxOutgoingStackArgs(const toyc::ir::IRFunction& func);
     bool isLeafFunction(const toyc::ir::IRFunction& func);
-    std::set<int> computeSavedRegs(int optimizedSavedRegCount);
+    std::set<int> computeSavedRegs(const toyc::ir::IRFunction& func, bool optimize);
     int alignTo16(int size);
 };
 

@@ -7,6 +7,7 @@
 
 #include <map>
 #include <ostream>
+#include <set>
 #include <vector>
 
 namespace toyc::backend {
@@ -24,6 +25,8 @@ private:
     int nextLocalLabelId_ = 0;
     std::map<int, int> constValues_;
     std::map<int, int> useCounts_;
+    std::set<int> nonNegativeValues_;
+    std::set<int> nonNegativeSlots_;
     
     void generateDataSection(const toyc::ir::IRModule& module, std::ostream& out);
     void generateTextSection(const toyc::ir::IRModule& module, std::ostream& out);
@@ -67,6 +70,10 @@ private:
         const RegMapping& regMap,
         std::vector<RISCVInstruction>& insts
     );
+
+    void analyzeNonNegativeValues(const toyc::ir::IRFunction& func);
+    [[nodiscard]] bool isNonNegativeValue(int valueId) const;
+    [[nodiscard]] bool producesNonNegative(const toyc::ir::IRInstruction& inst) const;
 };
 
 } // namespace toyc::backend

@@ -2,6 +2,7 @@
 
 #include "ir/basic_block.h"
 
+#include <cstdint>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -12,6 +13,12 @@ namespace {
 
 constexpr int kImm12Min = -2048;
 constexpr int kImm12Max = 2047;
+
+struct MagicUnsigned {
+    std::uint32_t multiplier = 0;
+    int shift = 0;
+    bool addIndicator = false;
+};
 
 [[nodiscard]] bool fitsImm12(int value) {
     return value >= kImm12Min && value <= kImm12Max;
@@ -80,6 +87,79 @@ int resultDestReg(int vreg, const RegMapping& regMap, int scratch) {
     return scratch;
 }
 
+[[nodiscard]] MagicUnsigned magicUnsigned(int divisor) {
+    const std::uint64_t unsignedDivisor = static_cast<std::uint32_t>(divisor);
+    const std::uint64_t two31 = 1ULL << 31;
+    const std::uint64_t nc = 0xffffffffULL - (0xffffffffULL % unsignedDivisor);
+
+    int p = 31;
+    std::uint64_t q1 = two31 / nc;
+    std::uint64_t r1 = two31 - q1 * nc;
+    std::uint64_t q2 = two31 / unsignedDivisor;
+    std::uint64_t r2 = two31 - q2 * unsignedDivisor;
+    std::uint64_t delta = 0;
+
+    do {
+        ++p;
+        q1 *= 2;
+        r1 *= 2;
+        if (r1 >= nc) {
+            ++q1;
+            r1 -= nc;
+        }
+
+        q2 *= 2;
+        r2 *= 2;
+        if (r2 >= unsignedDivisor) {
+            ++q2;
+            r2 -= unsignedDivisor;
+        }
+
+        delta = unsignedDivisor - 1 - r2;
+    } while (q1 < delta || (q1 == delta && r1 == 0));
+
+    const std::uint64_t multiplier = q2 + 1;
+    return MagicUnsigned{
+        static_cast<std::uint32_t>(multiplier),
+        p - 32,
+        multiplier > 0xffffffffULL,
+    };
+}
+
+void emitUnsignedDivConstant(int targetReg, int sourceReg, int divisor, std::vector<RISCVInstruction>& insts) {
+    const MagicUnsigned magic = magicUnsigned(divisor);
+    insts.push_back(RISCVInstruction::makeLI(Reg::T1, static_cast<int>(magic.multiplier)));
+    insts.push_back(RISCVInstruction::makeMULHU(targetReg, sourceReg, Reg::T1));
+    if (magic.addIndicator) {
+        insts.push_back(RISCVInstruction::makeSUB(Reg::T1, sourceReg, targetReg));
+        insts.push_back(RISCVInstruction(RISCVOp::SRLI).addReg(Reg::T1).addReg(Reg::T1).addImm(1));
+        insts.push_back(RISCVInstruction::makeADD(targetReg, targetReg, Reg::T1));
+        if (magic.shift > 1) {
+            insts.push_back(RISCVInstruction(RISCVOp::SRLI).addReg(targetReg).addReg(targetReg).addImm(magic.shift - 1));
+        }
+    } else if (magic.shift > 0) {
+        insts.push_back(RISCVInstruction(RISCVOp::SRLI).addReg(targetReg).addReg(targetReg).addImm(magic.shift));
+    }
+}
+
+void emitUnsignedRemainderConstant(int targetReg, int sourceReg, int divisor, std::vector<RISCVInstruction>& insts) {
+    emitUnsignedDivConstant(Reg::T2, sourceReg, divisor, insts);
+    insts.push_back(RISCVInstruction::makeLI(Reg::T1, divisor));
+    insts.push_back(RISCVInstruction::makeMUL(Reg::T2, Reg::T2, Reg::T1));
+    insts.push_back(RISCVInstruction::makeSUB(targetReg, sourceReg, Reg::T2));
+}
+
+void emitUnsignedPowerOfTwoRemainder(int targetReg, int sourceReg, int shift, std::vector<RISCVInstruction>& insts) {
+    const int mask = (1 << shift) - 1;
+    if (fitsImm12(mask)) {
+        insts.push_back(RISCVInstruction::makeANDI(targetReg, sourceReg, mask));
+        return;
+    }
+    const int clearHighShift = 32 - shift;
+    insts.push_back(RISCVInstruction(RISCVOp::SLLI).addReg(targetReg).addReg(sourceReg).addImm(clearHighShift));
+    insts.push_back(RISCVInstruction(RISCVOp::SRLI).addReg(targetReg).addReg(targetReg).addImm(clearHighShift));
+}
+
 } // namespace
 
 CodeGenerator::CodeGenerator(bool optimize) : optimize_(optimize) {}
@@ -119,6 +199,8 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
     RegMapping regMap = regAlloc.allocate(func, frame, optimize_);
 
     constValues_.clear();
+    nonNegativeValues_.clear();
+    nonNegativeSlots_.clear();
     currentFunctionName_ = func.name;
     nextLocalLabelId_ = 0;
     useCounts_.clear();
@@ -133,6 +215,9 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
                 }
             }
         }
+    }
+    if (optimize_) {
+        analyzeNonNegativeValues(func);
     }
     
     std::vector<RISCVInstruction> insts;
@@ -260,6 +345,158 @@ void CodeGenerator::storeResult(
     } else {
         emitStoreToSp(srcReg, it->second.regOrOffset, insts);
     }
+}
+
+bool CodeGenerator::isNonNegativeValue(int valueId) const {
+    const auto constIt = constValues_.find(valueId);
+    if (constIt != constValues_.end()) {
+        return constIt->second >= 0;
+    }
+    return nonNegativeValues_.count(valueId) > 0;
+}
+
+bool CodeGenerator::producesNonNegative(const toyc::ir::IRInstruction& inst) const {
+    using toyc::ir::IROp;
+
+    switch (inst.op) {
+        case IROp::Const:
+            return inst.immediate >= 0;
+        case IROp::Move:
+            return !inst.operands.empty() && isNonNegativeValue(inst.operands[0].id);
+        case IROp::ICmpEq:
+        case IROp::ICmpNe:
+        case IROp::ICmpLt:
+        case IROp::ICmpLe:
+        case IROp::ICmpGt:
+        case IROp::ICmpGe:
+        case IROp::Not:
+            return true;
+        case IROp::Load:
+            return !inst.operands.empty() && nonNegativeSlots_.count(inst.operands[0].id) > 0;
+        case IROp::Add:
+        case IROp::Mul:
+            return inst.operands.size() >= 2 && isNonNegativeValue(inst.operands[0].id) &&
+                   isNonNegativeValue(inst.operands[1].id);
+        case IROp::Div:
+        case IROp::Mod: {
+            if (inst.operands.size() < 2 || !isNonNegativeValue(inst.operands[0].id)) {
+                return false;
+            }
+            const auto rhsConst = constValues_.find(inst.operands[1].id);
+            return rhsConst != constValues_.end() && rhsConst->second > 0;
+        }
+        default:
+            return false;
+    }
+}
+
+void CodeGenerator::analyzeNonNegativeValues(const toyc::ir::IRFunction& func) {
+    using toyc::ir::IRInstruction;
+    using toyc::ir::IROp;
+
+    std::unordered_map<int, std::vector<const IRInstruction*>> definitions;
+    std::unordered_map<int, std::vector<const IRInstruction*>> storesBySlot;
+
+    for (const auto& block : func.blocks) {
+        for (const IRInstruction& inst : block.instructions()) {
+            if (inst.result.has_value()) {
+                definitions[inst.result->id].push_back(&inst);
+            }
+            if (inst.op == IROp::Store && inst.operands.size() >= 2) {
+                storesBySlot[inst.operands[1].id].push_back(&inst);
+            }
+        }
+    }
+
+    const auto uniqueDefinition = [&](int valueId) -> const IRInstruction* {
+        const auto it = definitions.find(valueId);
+        if (it == definitions.end() || it->second.size() != 1) {
+            return nullptr;
+        }
+        return it->second.front();
+    };
+
+    const auto isPositiveConst = [&](int valueId) {
+        const auto it = constValues_.find(valueId);
+        return it != constValues_.end() && it->second > 0;
+    };
+
+    const auto isLoadFromSlot = [&](int valueId, int slotId) {
+        const IRInstruction* def = uniqueDefinition(valueId);
+        return def != nullptr && def->op == IROp::Load && !def->operands.empty() && def->operands[0].id == slotId;
+    };
+
+    for (const auto& [slotId, stores] : storesBySlot) {
+        bool hasNonNegativeInitialization = false;
+        bool hasPositiveRecurrence = false;
+        bool valid = true;
+
+        for (const IRInstruction* store : stores) {
+            const int valueId = store->operands[0].id;
+            const auto constIt = constValues_.find(valueId);
+            if (constIt != constValues_.end() && constIt->second >= 0) {
+                hasNonNegativeInitialization = true;
+                continue;
+            }
+
+            const IRInstruction* valueDef = uniqueDefinition(valueId);
+            if (valueDef != nullptr && valueDef->op == IROp::Add && valueDef->operands.size() >= 2) {
+                const int lhs = valueDef->operands[0].id;
+                const int rhs = valueDef->operands[1].id;
+                if ((isLoadFromSlot(lhs, slotId) && isPositiveConst(rhs)) ||
+                    (isLoadFromSlot(rhs, slotId) && isPositiveConst(lhs))) {
+                    hasPositiveRecurrence = true;
+                    continue;
+                }
+            }
+
+            valid = false;
+            break;
+        }
+
+        if (valid && hasNonNegativeInitialization && hasPositiveRecurrence) {
+            nonNegativeSlots_.insert(slotId);
+        }
+    }
+
+    bool changed = false;
+    do {
+        changed = false;
+
+        for (const auto& [valueId, defs] : definitions) {
+            if (isNonNegativeValue(valueId)) {
+                continue;
+            }
+            bool everyDefinitionIsNonNegative = !defs.empty();
+            for (const IRInstruction* def : defs) {
+                if (!producesNonNegative(*def)) {
+                    everyDefinitionIsNonNegative = false;
+                    break;
+                }
+            }
+            if (everyDefinitionIsNonNegative) {
+                nonNegativeValues_.insert(valueId);
+                changed = true;
+            }
+        }
+
+        for (const auto& [slotId, stores] : storesBySlot) {
+            if (nonNegativeSlots_.count(slotId) > 0) {
+                continue;
+            }
+            bool everyStoreIsNonNegative = !stores.empty();
+            for (const IRInstruction* store : stores) {
+                if (!isNonNegativeValue(store->operands[0].id)) {
+                    everyStoreIsNonNegative = false;
+                    break;
+                }
+            }
+            if (everyStoreIsNonNegative) {
+                nonNegativeSlots_.insert(slotId);
+                changed = true;
+            }
+        }
+    } while (changed);
 }
 
 void CodeGenerator::generateBasicBlock(
@@ -534,6 +771,21 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
                 if (rhsConst != constValues_.end()) {
                     const int divisor = rhsConst->second;
                     const int shift = powerOfTwoShift(divisor);
+                    if (shift >= 0 && isNonNegativeValue(inst.operands[0].id)) {
+                        emitUnsignedPowerOfTwoRemainder(rd, rs1, shift, result);
+                        storeResult(inst.result->id, rd, regMap, result);
+                        break;
+                    }
+                    if (divisor > 1 && isNonNegativeValue(inst.operands[0].id)) {
+                        int source = rs1;
+                        if (source == rd || source == Reg::T1 || source == Reg::T2) {
+                            result.push_back(RISCVInstruction::makeMV(Reg::T3, source));
+                            source = Reg::T3;
+                        }
+                        emitUnsignedRemainderConstant(rd, source, divisor, result);
+                        storeResult(inst.result->id, rd, regMap, result);
+                        break;
+                    }
                     if (shift >= 0 && divisor - 1 <= kImm12Max && -divisor >= kImm12Min) {
                         result.push_back(RISCVInstruction::makeANDI(rd, rs1, divisor - 1));
                         const std::string doneLabel = localBlockLabel(
