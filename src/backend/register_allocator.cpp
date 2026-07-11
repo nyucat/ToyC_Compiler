@@ -4,6 +4,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <set>
+#include <unordered_map>
+#include <vector>
 
 namespace toyc::backend {
 
@@ -68,16 +71,10 @@ RegMapping RegisterAllocator::allocateWithRegisters(
         Reg::S2, Reg::S3, Reg::S4, Reg::S5, Reg::S6,
         Reg::S7, Reg::S8, Reg::S9, Reg::S10, Reg::S11,
     };
-    static constexpr int kTempPool[] = {
-        Reg::T0, Reg::T1, Reg::T2, Reg::T3, Reg::T4, Reg::T5,
-    };
 
     RegMapping mapping;
     fallback = false;
     std::size_t spillIdx = 0;
-
-    std::size_t savedIdx = 0;
-    std::size_t tempIdx = 0;
 
     auto assignSpill = [&](int valueId) {
         if (spillIdx >= frame.spillOffsets.size()) {
@@ -87,38 +84,78 @@ RegMapping RegisterAllocator::allocateWithRegisters(
         mapping[valueId] = RegOrSlot::fromSlot(frame.spillOffsets[spillIdx++]);
     };
 
-    auto assignValue = [&](int valueId) {
-        if (mapping.find(valueId) != mapping.end()) {
-            return;
-        }
-
-        if (savedIdx < sizeof(kSavedPool) / sizeof(kSavedPool[0])) {
-            mapping[valueId] = RegOrSlot::fromReg(kSavedPool[savedIdx++]);
-            return;
-        }
-
-        if (frame.isLeafFunction && tempIdx < sizeof(kTempPool) / sizeof(kTempPool[0])) {
-            mapping[valueId] = RegOrSlot::fromReg(kTempPool[tempIdx++]);
-            return;
-        }
-
-        assignSpill(valueId);
-    };
+    std::set<int> valueIds;
+    std::unordered_map<int, int> useCount;
 
     for (const auto& block : func.blocks) {
         for (const auto& inst : block.instructions()) {
             if (inst.result.has_value() && inst.result->id >= 0 &&
-                inst.op != toyc::ir::IROp::Alloca) {
-                assignValue(inst.result->id);
-                if (fallback) {
-                    return {};
+                inst.op != toyc::ir::IROp::Alloca &&
+                inst.op != toyc::ir::IROp::Const) {
+                valueIds.insert(inst.result->id);
+            }
+            for (const auto& operand : inst.operands) {
+                if (operand.id >= 0) {
+                    useCount[operand.id]++;
                 }
+            }
+        }
+    }
+
+    std::size_t savedIdx = 0;
+    for (const auto& block : func.blocks) {
+        for (const auto& inst : block.instructions()) {
+            if (inst.op != toyc::ir::IROp::Alloca || !inst.result.has_value()) {
+                continue;
+            }
+            if (frame.localVarOffsets.find(inst.result->id) != frame.localVarOffsets.end()) {
+                continue;
+            }
+            if (savedIdx < sizeof(kSavedPool) / sizeof(kSavedPool[0])) {
+                mapping[inst.result->id] = RegOrSlot::fromReg(kSavedPool[savedIdx++]);
+            } else {
+                fallback = true;
+                return {};
             }
         }
     }
 
     for (const auto& entry : frame.localVarOffsets) {
         mapping[entry.first] = RegOrSlot::fromSlot(entry.second);
+    }
+
+    for (const auto& block : func.blocks) {
+        for (const auto& inst : block.instructions()) {
+            if (inst.op != toyc::ir::IROp::Load || !inst.result.has_value() ||
+                inst.operands.empty()) {
+                continue;
+            }
+            const auto addrIt = mapping.find(inst.operands[0].id);
+            if (addrIt != mapping.end() && addrIt->second.isReg) {
+                valueIds.erase(inst.result->id);
+            }
+        }
+    }
+
+    std::vector<int> orderedValues(valueIds.begin(), valueIds.end());
+    std::stable_sort(orderedValues.begin(), orderedValues.end(), [&](int lhs, int rhs) {
+        const int lhsUses = useCount[lhs];
+        const int rhsUses = useCount[rhs];
+        if (lhsUses != rhsUses) {
+            return lhsUses > rhsUses;
+        }
+        return lhs < rhs;
+    });
+
+    for (int valueId : orderedValues) {
+        if (savedIdx < sizeof(kSavedPool) / sizeof(kSavedPool[0])) {
+            mapping[valueId] = RegOrSlot::fromReg(kSavedPool[savedIdx++]);
+        } else {
+            assignSpill(valueId);
+            if (fallback) {
+                return {};
+            }
+        }
     }
 
     for (const auto& block : func.blocks) {

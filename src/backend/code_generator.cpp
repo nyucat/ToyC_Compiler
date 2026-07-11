@@ -108,10 +108,16 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
     RegMapping regMap = regAlloc.allocate(func, frame, optimize_);
 
     constValues_.clear();
+    useCounts_.clear();
     for (const auto& block : func.blocks) {
         for (const auto& inst : block.instructions()) {
             if (inst.op == toyc::ir::IROp::Const && inst.result.has_value()) {
                 constValues_[inst.result->id] = inst.immediate;
+            }
+            for (const auto& operand : inst.operands) {
+                if (operand.id >= 0) {
+                    useCounts_[operand.id]++;
+                }
             }
         }
     }
@@ -209,8 +215,17 @@ int CodeGenerator::getRegOrLoadToTmp(
         if (it->second.isReg) {
             return it->second.regOrOffset;
         }
+        const auto constIt = constValues_.find(vreg);
+        if (constIt != constValues_.end()) {
+            insts.push_back(RISCVInstruction::makeLI(tmpReg, constIt->second));
+            return tmpReg;
+        }
         emitLoadFromSp(tmpReg, it->second.regOrOffset, insts);
         return tmpReg;
+    }
+    const auto constIt = constValues_.find(vreg);
+    if (constIt != constValues_.end()) {
+        insts.push_back(RISCVInstruction::makeLI(tmpReg, constIt->second));
     }
     return tmpReg;
 }
@@ -245,6 +260,24 @@ void CodeGenerator::generateBasicBlock(
     const std::vector<toyc::ir::IRInstruction>& irInsts = block.instructions();
     for (std::size_t idx = 0; idx < irInsts.size(); ++idx) {
         const toyc::ir::IRInstruction& irInst = irInsts[idx];
+
+        if (optimize_ && irInst.result.has_value() && idx + 1 < irInsts.size()) {
+            const toyc::ir::IRInstruction& nextInst = irInsts[idx + 1];
+            if (nextInst.op == toyc::ir::IROp::Store && nextInst.operands.size() >= 2 &&
+                nextInst.operands[0].id == irInst.result->id &&
+                useCounts_[irInst.result->id] == 1) {
+                const auto destIt = regMap.find(nextInst.operands[1].id);
+                if (destIt != regMap.end() && destIt->second.isReg) {
+                    RegMapping directMap = regMap;
+                    directMap[irInst.result->id] = RegOrSlot::fromReg(destIt->second.regOrOffset);
+                    for (const auto& riscvInst : translateInstruction(irInst, frame, directMap)) {
+                        insts.push_back(riscvInst);
+                    }
+                    ++idx;
+                    continue;
+                }
+            }
+        }
 
         if (optimize_ && idx + 1 < irInsts.size()) {
             const toyc::ir::IRInstruction& nextInst = irInsts[idx + 1];
@@ -316,6 +349,8 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
                 auto it = regMap.find(inst.result->id);
                 if (it != regMap.end() && it->second.isReg) {
                     rd = it->second.regOrOffset;
+                } else if (optimize_) {
+                    break;
                 }
                 result.push_back(RISCVInstruction::makeLI(rd, inst.immediate));
                 storeResult(inst.result->id, rd, regMap, result);

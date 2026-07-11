@@ -80,10 +80,8 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func, bool optimize) {
 
     const int localVars = countLocalVars(func);
     const int tempValues = countTempValues(func);
-    const int localRegHeld = 0;
-    const int tempRegHeld = optimize && frame.isLeafFunction
-                                ? std::min(tempValues, 16 - localRegHeld)
-                                : (optimize ? std::min(tempValues, 10 - localRegHeld) : 0);
+    const int localRegHeld = optimize ? std::min(localVars, 5) : 0;
+    const int tempRegHeld = optimize ? std::min(tempValues, 10 - localRegHeld) : 0;
     const int stackLocals = localVars - localRegHeld;
     const int stackTemps = optimize ? std::max(tempValues - tempRegHeld, 0) : tempValues;
 

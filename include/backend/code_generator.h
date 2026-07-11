@@ -21,6 +21,7 @@ private:
     bool optimize_;
     std::string exitLabel_;
     std::map<int, int> constValues_;
+    std::map<int, int> useCounts_;
     
     void generateDataSection(const toyc::ir::IRModule& module, std::ostream& out);
     void generateTextSection(const toyc::ir::IRModule& module, std::ostream& out);
