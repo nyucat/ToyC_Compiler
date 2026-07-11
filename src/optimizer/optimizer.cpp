@@ -10,8 +10,10 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <algorithm>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <unordered_map>
 #include <vector>
 
@@ -187,6 +189,177 @@ void inlineSmallFunctions(IRModule& module) {
             }
 
             block.instructions() = std::move(rewritten);
+        }
+    }
+}
+
+bool isLocalSlotUse(const IRInstruction& inst, int slotId) {
+    if (inst.op == IROp::Load && !inst.operands.empty() && inst.operands[0].id == slotId) {
+        return true;
+    }
+    if (inst.op == IROp::Store && inst.operands.size() >= 2 && inst.operands[1].id == slotId) {
+        return true;
+    }
+    return false;
+}
+
+bool slotAddressEscapes(const IRFunction& function, int slotId) {
+    for (const auto& block : function.blocks) {
+        for (const IRInstruction& inst : block.instructions()) {
+            if (isLocalSlotUse(inst, slotId)) {
+                continue;
+            }
+            if (inst.result.has_value() && inst.result->id == slotId) {
+                continue;
+            }
+            for (const IRValue& operand : inst.operands) {
+                if (operand.id == slotId) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+IRValue resolveValueAlias(const std::unordered_map<int, IRValue>& aliases, IRValue value) {
+    std::unordered_set<int> seen;
+    while (value.id >= 0 && seen.insert(value.id).second) {
+        const auto it = aliases.find(value.id);
+        if (it == aliases.end()) {
+            break;
+        }
+        value = it->second;
+    }
+    return value;
+}
+
+bool promoteSingleStoreSlots(IRFunction& function) {
+    std::unordered_set<int> slots;
+    for (const auto& block : function.blocks) {
+        for (const IRInstruction& inst : block.instructions()) {
+            if (inst.op == IROp::Alloca && inst.result.has_value()) {
+                slots.insert(inst.result->id);
+            }
+        }
+    }
+
+    std::unordered_map<int, IRValue> singleStoreValue;
+    for (int slotId : slots) {
+        if (slotAddressEscapes(function, slotId)) {
+            continue;
+        }
+
+        int storeCount = 0;
+        IRValue storedValue{-1, IRType::I32};
+        for (const auto& block : function.blocks) {
+            for (const IRInstruction& inst : block.instructions()) {
+                if (inst.op == IROp::Store && inst.operands.size() >= 2 && inst.operands[1].id == slotId) {
+                    ++storeCount;
+                    storedValue = inst.operands[0];
+                }
+            }
+        }
+        if (storeCount == 1) {
+            singleStoreValue[slotId] = storedValue;
+        }
+    }
+
+    if (singleStoreValue.empty()) {
+        return false;
+    }
+
+    bool changed = false;
+    std::unordered_set<int> removedLoads;
+    std::unordered_map<int, IRValue> aliases;
+
+    for (auto& block : function.blocks) {
+        std::vector<IRInstruction> rewritten;
+        rewritten.reserve(block.instructions().size());
+
+        for (auto& inst : block.instructions()) {
+            for (IRValue& operand : inst.operands) {
+                operand = resolveValueAlias(aliases, operand);
+            }
+
+            if (inst.op == IROp::Load && inst.result.has_value() && !inst.operands.empty()) {
+                const auto it = singleStoreValue.find(inst.operands[0].id);
+                if (it != singleStoreValue.end()) {
+                    aliases[inst.result->id] = resolveValueAlias(aliases, it->second);
+                    removedLoads.insert(inst.result->id);
+                    changed = true;
+                    continue;
+                }
+            }
+
+            if (inst.op == IROp::Store && inst.operands.size() >= 2 &&
+                singleStoreValue.find(inst.operands[1].id) != singleStoreValue.end()) {
+                changed = true;
+                continue;
+            }
+
+            if (inst.op == IROp::Alloca && inst.result.has_value() &&
+                singleStoreValue.find(inst.result->id) != singleStoreValue.end()) {
+                changed = true;
+                continue;
+            }
+
+            rewritten.push_back(std::move(inst));
+        }
+
+        block.instructions() = std::move(rewritten);
+    }
+
+    return changed;
+}
+
+bool removeDeadLocalStores(IRFunction& function) {
+    std::unordered_set<int> loadedSlots;
+    std::unordered_set<int> localSlots;
+
+    for (const auto& block : function.blocks) {
+        for (const IRInstruction& inst : block.instructions()) {
+            if (inst.op == IROp::Alloca && inst.result.has_value()) {
+                localSlots.insert(inst.result->id);
+            } else if (inst.op == IROp::Load && !inst.operands.empty()) {
+                loadedSlots.insert(inst.operands[0].id);
+            }
+        }
+    }
+
+    bool changed = false;
+    for (auto& block : function.blocks) {
+        std::vector<IRInstruction> rewritten;
+        rewritten.reserve(block.instructions().size());
+        for (auto& inst : block.instructions()) {
+            if (inst.op == IROp::Store && inst.operands.size() >= 2 &&
+                localSlots.count(inst.operands[1].id) > 0 && loadedSlots.count(inst.operands[1].id) == 0) {
+                changed = true;
+                continue;
+            }
+            if (inst.op == IROp::Alloca && inst.result.has_value() &&
+                loadedSlots.count(inst.result->id) == 0) {
+                changed = true;
+                continue;
+            }
+            rewritten.push_back(std::move(inst));
+        }
+        block.instructions() = std::move(rewritten);
+    }
+    return changed;
+}
+
+void runMem2RegLite(IRModule& module) {
+    for (IRFunction& function : module.functions) {
+        bool changed = true;
+        int rounds = 0;
+        while (changed && rounds++ < 4) {
+            changed = false;
+            changed |= promoteSingleStoreSlots(function);
+            changed |= removeDeadLocalStores(function);
+        }
+        if (rounds > 1) {
+            buildCFG(function);
         }
     }
 }
@@ -823,6 +996,7 @@ void runOptimizationPipeline(toyc::ir::IRModule& module, bool enableOpt) {
     for (int round = 0; round < 3; ++round) {
         constantFold.run(module);
         copyProp.run(module);
+        runMem2RegLite(module);
         cse.run(module);
         cfgSimplify.run(module);
         deadCode.run(module);
