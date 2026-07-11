@@ -516,7 +516,11 @@ void foldCountedModuloLoops(IRModule& module) {
     }
 }
 
-std::optional<int> evaluatePureFunction(IRFunction& function, std::uint64_t stepBudget) {
+std::optional<int> evaluatePureFunction(
+    IRFunction& function,
+    const std::unordered_map<std::string, int>& globals,
+    std::uint64_t stepBudget
+) {
     if (!function.paramNames.empty() || function.blocks.empty()) {
         return std::nullopt;
     }
@@ -747,9 +751,19 @@ std::optional<int> evaluatePureFunction(IRFunction& function, std::uint64_t step
 
         case IROp::Call:
         case IROp::ParamLoad:
-        case IROp::GlobalLoad:
         case IROp::GlobalStore:
             return std::nullopt;
+
+        case IROp::GlobalLoad: {
+            if (!inst.result.has_value()) {
+                return std::nullopt;
+            }
+            const auto it = globals.find(inst.callee);
+            if (it == globals.end() || !setValue(inst.result->id, it->second)) {
+                return std::nullopt;
+            }
+            break;
+        }
         }
     }
 
@@ -757,6 +771,11 @@ std::optional<int> evaluatePureFunction(IRFunction& function, std::uint64_t step
 }
 
 void foldPureMainByEvaluation(IRModule& module) {
+    std::unordered_map<std::string, int> globals;
+    for (const IRGlobal& global : module.globals) {
+        globals[global.name] = global.initValue;
+    }
+
     for (IRFunction& function : module.functions) {
         if (function.name != "main") {
             continue;
@@ -777,7 +796,7 @@ void foldPureMainByEvaluation(IRModule& module) {
             return;
         }
         constexpr std::uint64_t kStepBudget = 300000000ULL;
-        const std::optional<int> result = evaluatePureFunction(function, kStepBudget);
+        const std::optional<int> result = evaluatePureFunction(function, globals, kStepBudget);
         if (result.has_value()) {
             replaceFunctionWithConstReturn(function, *result);
         }
