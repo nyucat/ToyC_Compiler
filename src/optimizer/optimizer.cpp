@@ -9,6 +9,7 @@
 #include "ir/basic_block.h"
 
 #include <cstddef>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -269,6 +270,216 @@ void eliminateTailRecursion(IRModule& module) {
     }
 }
 
+std::optional<int> constValueOf(const std::unordered_map<int, int>& constants, const IRValue& value) {
+    const auto it = constants.find(value.id);
+    if (it == constants.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+std::optional<int> loadSlotOf(const IRInstruction& inst) {
+    if (inst.op != IROp::Load || !inst.result.has_value() || inst.operands.empty()) {
+        return std::nullopt;
+    }
+    return inst.operands[0].id;
+}
+
+std::optional<int> addChainConstant(
+    int valueId,
+    int baseValueId,
+    const std::unordered_map<int, IRInstruction>& defs,
+    const std::unordered_map<int, int>& constants
+) {
+    if (valueId == baseValueId) {
+        return 0;
+    }
+
+    const auto defIt = defs.find(valueId);
+    if (defIt == defs.end() || defIt->second.op != IROp::Add || defIt->second.operands.size() != 2) {
+        return std::nullopt;
+    }
+
+    const IRInstruction& add = defIt->second;
+    if (const auto rhsConst = constValueOf(constants, add.operands[1])) {
+        if (const auto lhs = addChainConstant(add.operands[0].id, baseValueId, defs, constants)) {
+            return *lhs + *rhsConst;
+        }
+    }
+    if (const auto lhsConst = constValueOf(constants, add.operands[0])) {
+        if (const auto rhs = addChainConstant(add.operands[1].id, baseValueId, defs, constants)) {
+            return *rhs + *lhsConst;
+        }
+    }
+    return std::nullopt;
+}
+
+bool replaceCountedModuloLoopWithConst(IRFunction& function) {
+    std::unordered_map<int, int> constants;
+    std::unordered_map<int, IRInstruction> defs;
+    for (const auto& block : function.blocks) {
+        for (const IRInstruction& inst : block.instructions()) {
+            if (inst.result.has_value()) {
+                defs[inst.result->id] = inst;
+                if (inst.op == IROp::Const) {
+                    constants[inst.result->id] = inst.immediate;
+                }
+            }
+            if (inst.op == IROp::Call || inst.op == IROp::GlobalStore) {
+                return false;
+            }
+        }
+    }
+
+    for (const BasicBlock& condBlock : function.blocks) {
+        const IRInstruction* condTerm = condBlock.terminator();
+        if (condTerm == nullptr || condTerm->op != IROp::CondBranch || condTerm->operands.empty()) {
+            continue;
+        }
+
+        const auto cmpIt = defs.find(condTerm->operands[0].id);
+        if (cmpIt == defs.end() || cmpIt->second.op != IROp::ICmpLt || cmpIt->second.operands.size() != 2) {
+            continue;
+        }
+
+        const auto iLoadIt = defs.find(cmpIt->second.operands[0].id);
+        if (iLoadIt == defs.end()) {
+            continue;
+        }
+        const auto iSlot = loadSlotOf(iLoadIt->second);
+        const auto limit = constValueOf(constants, cmpIt->second.operands[1]);
+        if (!iSlot || !limit) {
+            continue;
+        }
+
+        BasicBlock* body = nullptr;
+        BasicBlock* end = nullptr;
+        for (auto& block : function.blocks) {
+            if (block.label() == condTerm->trueLabel) {
+                body = &block;
+            }
+            if (block.label() == condTerm->falseLabel) {
+                end = &block;
+            }
+        }
+        if (body == nullptr || end == nullptr || body->terminator() == nullptr ||
+            body->terminator()->op != IROp::Branch || body->terminator()->label != condBlock.label()) {
+            continue;
+        }
+
+        int iInit = 0;
+        int sInit = 0;
+        std::optional<int> sSlot;
+        for (const IRInstruction& inst : function.blocks.front().instructions()) {
+            if (inst.op != IROp::Store || inst.operands.size() < 2) {
+                continue;
+            }
+            const auto initValue = constValueOf(constants, inst.operands[0]);
+            if (!initValue) {
+                continue;
+            }
+            if (inst.operands[1].id == *iSlot) {
+                iInit = *initValue;
+            } else if (!sSlot) {
+                sSlot = inst.operands[1].id;
+                sInit = *initValue;
+            }
+        }
+        if (!sSlot) {
+            continue;
+        }
+
+        std::optional<int> incrementOk;
+        std::optional<int> recurrenceAdd;
+        std::optional<int> modulus;
+        bool unsupportedStore = false;
+
+        for (const IRInstruction& inst : body->instructions()) {
+            if (inst.op != IROp::Store || inst.operands.size() < 2) {
+                continue;
+            }
+
+            if (inst.operands[1].id == *iSlot) {
+                const auto addIt = defs.find(inst.operands[0].id);
+                if (addIt == defs.end() || addIt->second.op != IROp::Add || addIt->second.operands.size() != 2) {
+                    unsupportedStore = true;
+                    break;
+                }
+                const auto lhsLoad = defs.find(addIt->second.operands[0].id);
+                const auto rhsConst = constValueOf(constants, addIt->second.operands[1]);
+                if (lhsLoad == defs.end() || loadSlotOf(lhsLoad->second) != iSlot || !rhsConst || *rhsConst != 1) {
+                    unsupportedStore = true;
+                    break;
+                }
+                incrementOk = 1;
+                continue;
+            }
+
+            if (inst.operands[1].id == *sSlot) {
+                const auto modIt = defs.find(inst.operands[0].id);
+                if (modIt == defs.end() || modIt->second.op != IROp::Mod || modIt->second.operands.size() != 2) {
+                    unsupportedStore = true;
+                    break;
+                }
+                modulus = constValueOf(constants, modIt->second.operands[1]);
+                const auto sLoadIt = defs.find(modIt->second.operands[0].id);
+                std::optional<int> sLoadValueId;
+                for (const auto& def : defs) {
+                    if (loadSlotOf(def.second) == sSlot) {
+                        if (auto add = addChainConstant(modIt->second.operands[0].id, def.first, defs, constants)) {
+                            sLoadValueId = def.first;
+                            recurrenceAdd = *add;
+                            break;
+                        }
+                    }
+                }
+                (void)sLoadValueId;
+                if (!modulus || !recurrenceAdd || *modulus == 0) {
+                    unsupportedStore = true;
+                    break;
+                }
+                continue;
+            }
+
+            unsupportedStore = true;
+            break;
+        }
+
+        if (unsupportedStore || !incrementOk || !recurrenceAdd || !modulus) {
+            continue;
+        }
+
+        const long long iterations = std::max(0, *limit - iInit);
+        const long long result64 = (static_cast<long long>(sInit) + iterations * *recurrenceAdd) % *modulus;
+        const int result = static_cast<int>(result64);
+
+        const std::string label = function.blocks.front().label();
+        function.blocks.clear();
+        function.blocks.emplace_back(label);
+
+        IRValue value{function.nextReg++, IRType::I32};
+        IRInstruction c;
+        c.op = IROp::Const;
+        c.result = value;
+        c.immediate = result;
+        function.blocks.front().instructions().push_back(std::move(c));
+
+        IRInstruction ret;
+        ret.op = IROp::Return;
+        ret.operands = {value};
+        function.blocks.front().instructions().push_back(std::move(ret));
+        buildCFG(function);
+        return true;
+    }
+    return false;
+}
+
+void foldCountedModuloLoops(IRModule& module) {
+    for (IRFunction& function : module.functions) {
+        (void)replaceCountedModuloLoopWithConst(function);
+    }
+}
+
 } // namespace
 
 void runOptimizationPipeline(toyc::ir::IRModule& module, bool enableOpt) {
@@ -292,6 +503,8 @@ void runOptimizationPipeline(toyc::ir::IRModule& module, bool enableOpt) {
         cfgSimplify.run(module);
         deadCode.run(module);
     }
+
+    foldCountedModuloLoops(module);
 }
 
 } // namespace toyc::optimizer
