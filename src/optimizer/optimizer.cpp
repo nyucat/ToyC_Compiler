@@ -1158,6 +1158,50 @@ void foldPureMainByEvaluation(IRModule& module) {
     }
 }
 
+void eliminateDeadFunctions(IRModule& module) {
+    std::unordered_map<std::string, const IRFunction*> functions;
+    for (const IRFunction& function : module.functions) {
+        functions.emplace(function.name, &function);
+    }
+
+    if (functions.find("main") == functions.end()) {
+        return;
+    }
+
+    std::unordered_set<std::string> reachable;
+    std::vector<std::string> worklist{"main"};
+    reachable.insert("main");
+
+    while (!worklist.empty()) {
+        const std::string name = worklist.back();
+        worklist.pop_back();
+
+        const auto functionIt = functions.find(name);
+        if (functionIt == functions.end()) {
+            continue;
+        }
+
+        for (const auto& block : functionIt->second->blocks) {
+            for (const IRInstruction& inst : block.instructions()) {
+                if (inst.op != IROp::Call) {
+                    continue;
+                }
+                if (functions.find(inst.callee) != functions.end() &&
+                    reachable.insert(inst.callee).second) {
+                    worklist.push_back(inst.callee);
+                }
+            }
+        }
+    }
+
+    module.functions.erase(
+        std::remove_if(module.functions.begin(), module.functions.end(), [&](const IRFunction& function) {
+            return reachable.find(function.name) == reachable.end();
+        }),
+        module.functions.end()
+    );
+}
+
 } // namespace
 
 void runOptimizationPipeline(toyc::ir::IRModule& module, bool enableOpt) {
@@ -1185,6 +1229,7 @@ void runOptimizationPipeline(toyc::ir::IRModule& module, bool enableOpt) {
 
     foldCountedModuloLoops(module);
     foldPureMainByEvaluation(module);
+    eliminateDeadFunctions(module);
 }
 
 } // namespace toyc::optimizer
