@@ -53,6 +53,7 @@ bool FrameLayout::isLeafFunction(const toyc::ir::IRFunction& func) {
     return true;
 }
 
+<<<<<<< Updated upstream
 std::set<int> FrameLayout::computeSavedRegs(int optimizedSavedRegCount) {
     std::set<int> usedRegs;
 
@@ -63,11 +64,27 @@ std::set<int> FrameLayout::computeSavedRegs(int optimizedSavedRegCount) {
     return usedRegs;
 }
 
+=======
+>>>>>>> Stashed changes
 int FrameLayout::alignTo16(int size) {
     return (size + 15) & ~15;
 }
 
 FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func, bool optimize) {
+    std::set<int> provisionalSavedRegs;
+    if (optimize) {
+        for (int reg = 18; reg <= 27; ++reg) {
+            provisionalSavedRegs.insert(reg);
+        }
+    }
+    return layout(func, optimize, provisionalSavedRegs);
+}
+
+FrameInfo FrameLayout::layout(
+    const toyc::ir::IRFunction& func,
+    bool optimize,
+    const std::set<int>& usedSavedRegs
+) {
     FrameInfo frame;
 
     frame.isLeafFunction = isLeafFunction(func);
@@ -80,8 +97,12 @@ FrameInfo FrameLayout::layout(const toyc::ir::IRFunction& func, bool optimize) {
     const int stackLocals = localVars - localRegHeld;
     const int stackTemps = optimize ? std::max(tempValues - tempRegHeld, 0) : tempValues;
 
+<<<<<<< Updated upstream
     const int optimizedSavedRegCount = optimize ? std::min(localRegHeld + tempRegHeld, 10) : 0;
     frame.usedSavedRegs = computeSavedRegs(optimizedSavedRegCount);
+=======
+    frame.usedSavedRegs = usedSavedRegs;
+>>>>>>> Stashed changes
 
     const int outgoingStackArgs = countMaxOutgoingStackArgs(func);
     const int savedRegsCount = static_cast<int>(frame.usedSavedRegs.size());

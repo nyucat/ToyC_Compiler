@@ -7,6 +7,7 @@
 
 #include <map>
 #include <ostream>
+#include <string>
 #include <vector>
 
 namespace toyc::backend {
@@ -20,6 +21,7 @@ public:
 private:
     bool optimize_;
     std::string exitLabel_;
+    std::string fallthroughLabel_;
     std::string currentFunctionName_;
     int nextLocalLabelId_ = 0;
     std::map<int, int> constValues_;
@@ -43,6 +45,7 @@ private:
     
     void generateBasicBlock(
         const toyc::ir::BasicBlock& block,
+        const std::string& nextLabel,
         const FrameInfo& frame,
         const RegMapping& regMap,
         std::vector<RISCVInstruction>& insts

@@ -3,6 +3,7 @@
 #include "ir/basic_block.h"
 
 #include <sstream>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -80,6 +81,20 @@ int resultDestReg(int vreg, const RegMapping& regMap, int scratch) {
     return scratch;
 }
 
+std::set<int> usedSavedRegsFromMapping(const RegMapping& regMap) {
+    std::set<int> regs;
+    for (const auto& entry : regMap) {
+        if (!entry.second.isReg) {
+            continue;
+        }
+        const int reg = entry.second.regOrOffset;
+        if (reg >= Reg::S2 && reg <= Reg::S11) {
+            regs.insert(reg);
+        }
+    }
+    return regs;
+}
+
 } // namespace
 
 CodeGenerator::CodeGenerator(bool optimize) : optimize_(optimize) {}
@@ -117,9 +132,14 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
     
     RegisterAllocator regAlloc;
     RegMapping regMap = regAlloc.allocate(func, frame, optimize_);
+    if (optimize_) {
+        frame = frameLayout.layout(func, optimize_, usedSavedRegsFromMapping(regMap));
+        regMap = regAlloc.allocate(func, frame, optimize_);
+    }
 
     constValues_.clear();
     currentFunctionName_ = func.name;
+    fallthroughLabel_.clear();
     nextLocalLabelId_ = 0;
     useCounts_.clear();
     for (const auto& block : func.blocks) {
@@ -150,18 +170,24 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
         blockByLabel.emplace(block.label(), &block);
     }
 
+    std::vector<const toyc::ir::BasicBlock*> emissionOrder;
     std::unordered_set<std::string> emitted;
     for (const toyc::ir::BasicBlock* blockPtr : orderedBlocks) {
         const auto it = blockByLabel.find(blockPtr->label());
         if (it != blockByLabel.end()) {
-            generateBasicBlock(*it->second, frame, regMap, insts);
+            emissionOrder.push_back(it->second);
             emitted.insert(blockPtr->label());
         }
     }
     for (const auto& block : func.blocks) {
         if (emitted.find(block.label()) == emitted.end()) {
-            generateBasicBlock(block, frame, regMap, insts);
+            emissionOrder.push_back(&block);
         }
+    }
+    for (std::size_t i = 0; i < emissionOrder.size(); ++i) {
+        const std::string nextLabel =
+            i + 1 < emissionOrder.size() ? localBlockLabel(emissionOrder[i + 1]->label()) : exitLabel_;
+        generateBasicBlock(*emissionOrder[i], nextLabel, frame, regMap, insts);
     }
     
     insts.push_back(RISCVInstruction::makeLABEL(exitLabel_));
@@ -264,11 +290,13 @@ void CodeGenerator::storeResult(
 
 void CodeGenerator::generateBasicBlock(
     const toyc::ir::BasicBlock& block,
+    const std::string& nextLabel,
     const FrameInfo& frame,
     const RegMapping& regMap,
     std::vector<RISCVInstruction>& insts
 ) {
     insts.push_back(RISCVInstruction::makeLABEL(localBlockLabel(block.label())));
+    fallthroughLabel_ = nextLabel;
 
     const std::vector<toyc::ir::IRInstruction>& irInsts = block.instructions();
     for (std::size_t idx = 0; idx < irInsts.size(); ++idx) {
@@ -304,38 +332,74 @@ void CodeGenerator::generateBasicBlock(
                 const std::string falseLabel = localBlockLabel(nextInst.falseLabel);
 
                 if (irInst.op == toyc::ir::IROp::ICmpLt) {
-                    insts.push_back(RISCVInstruction::makeBLT(rs1, rs2, trueLabel));
-                    insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                    if (trueLabel == nextLabel) {
+                        insts.push_back(RISCVInstruction::makeBGE(rs1, rs2, falseLabel));
+                    } else {
+                        insts.push_back(RISCVInstruction::makeBLT(rs1, rs2, trueLabel));
+                        if (falseLabel != nextLabel) {
+                            insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                        }
+                    }
                     ++idx;
                     continue;
                 }
                 if (irInst.op == toyc::ir::IROp::ICmpGt) {
-                    insts.push_back(RISCVInstruction::makeBLT(rs2, rs1, trueLabel));
-                    insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                    if (trueLabel == nextLabel) {
+                        insts.push_back(RISCVInstruction::makeBGE(rs2, rs1, falseLabel));
+                    } else {
+                        insts.push_back(RISCVInstruction::makeBLT(rs2, rs1, trueLabel));
+                        if (falseLabel != nextLabel) {
+                            insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                        }
+                    }
                     ++idx;
                     continue;
                 }
                 if (irInst.op == toyc::ir::IROp::ICmpEq) {
-                    insts.push_back(RISCVInstruction::makeBEQ(rs1, rs2, trueLabel));
-                    insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                    if (trueLabel == nextLabel) {
+                        insts.push_back(RISCVInstruction::makeBNE(rs1, rs2, falseLabel));
+                    } else {
+                        insts.push_back(RISCVInstruction::makeBEQ(rs1, rs2, trueLabel));
+                        if (falseLabel != nextLabel) {
+                            insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                        }
+                    }
                     ++idx;
                     continue;
                 }
                 if (irInst.op == toyc::ir::IROp::ICmpNe) {
-                    insts.push_back(RISCVInstruction::makeBNE(rs1, rs2, trueLabel));
-                    insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                    if (trueLabel == nextLabel) {
+                        insts.push_back(RISCVInstruction::makeBEQ(rs1, rs2, falseLabel));
+                    } else {
+                        insts.push_back(RISCVInstruction::makeBNE(rs1, rs2, trueLabel));
+                        if (falseLabel != nextLabel) {
+                            insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                        }
+                    }
                     ++idx;
                     continue;
                 }
                 if (irInst.op == toyc::ir::IROp::ICmpLe) {
-                    insts.push_back(RISCVInstruction::makeBGE(rs2, rs1, trueLabel));
-                    insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                    if (trueLabel == nextLabel) {
+                        insts.push_back(RISCVInstruction::makeBLT(rs2, rs1, falseLabel));
+                    } else {
+                        insts.push_back(RISCVInstruction::makeBGE(rs2, rs1, trueLabel));
+                        if (falseLabel != nextLabel) {
+                            insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                        }
+                    }
                     ++idx;
                     continue;
                 }
                 if (irInst.op == toyc::ir::IROp::ICmpGe) {
-                    insts.push_back(RISCVInstruction::makeBGE(rs1, rs2, trueLabel));
-                    insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                    if (trueLabel == nextLabel) {
+                        insts.push_back(RISCVInstruction::makeBLT(rs1, rs2, falseLabel));
+                    } else {
+                        insts.push_back(RISCVInstruction::makeBGE(rs1, rs2, trueLabel));
+                        if (falseLabel != nextLabel) {
+                            insts.push_back(RISCVInstruction::makeJ(falseLabel));
+                        }
+                    }
                     ++idx;
                     continue;
                 }
@@ -680,15 +744,26 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
         }
         
         case toyc::ir::IROp::Branch: {
-            result.push_back(RISCVInstruction::makeJ(localBlockLabel(inst.label)));
+            const std::string target = localBlockLabel(inst.label);
+            if (target != fallthroughLabel_) {
+                result.push_back(RISCVInstruction::makeJ(target));
+            }
             break;
         }
         
         case toyc::ir::IROp::CondBranch: {
             if (!inst.operands.empty()) {
                 int cond = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
-                result.push_back(RISCVInstruction::makeBNE(cond, Reg::ZERO, localBlockLabel(inst.trueLabel)));
-                result.push_back(RISCVInstruction::makeJ(localBlockLabel(inst.falseLabel)));
+                const std::string trueLabel = localBlockLabel(inst.trueLabel);
+                const std::string falseLabel = localBlockLabel(inst.falseLabel);
+                if (trueLabel == fallthroughLabel_) {
+                    result.push_back(RISCVInstruction::makeBEQ(cond, Reg::ZERO, falseLabel));
+                } else {
+                    result.push_back(RISCVInstruction::makeBNE(cond, Reg::ZERO, trueLabel));
+                    if (falseLabel != fallthroughLabel_) {
+                        result.push_back(RISCVInstruction::makeJ(falseLabel));
+                    }
+                }
             }
             break;
         }
@@ -698,7 +773,9 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
                 int val = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 result.push_back(RISCVInstruction::makeMV(Reg::A0, val));
             }
-            result.push_back(RISCVInstruction::makeJ(exitLabel_));
+            if (exitLabel_ != fallthroughLabel_) {
+                result.push_back(RISCVInstruction::makeJ(exitLabel_));
+            }
             break;
         }
         
