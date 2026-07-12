@@ -6,7 +6,7 @@
 namespace toyc::backend {
 
 enum class RISCVOp {
-    ADD, ADDI, SUB, MUL, MULHU, DIV, REM,
+    ADD, ADDI, SUB, MUL, DIV, REM,
     AND, ANDI, OR, ORI, XOR, XORI,
     SLL, SLLI, SRL, SRLI, SRA, SRAI,
     SLT, SLTI, SLTU, SLTIU,
@@ -126,12 +126,6 @@ public:
         return inst;
     }
 
-    static RISCVInstruction makeMULHU(int rd, int rs1, int rs2) {
-        RISCVInstruction inst(RISCVOp::MULHU);
-        inst.addReg(rd).addReg(rs1).addReg(rs2);
-        return inst;
-    }
-    
     static RISCVInstruction makeDIV(int rd, int rs1, int rs2) {
         RISCVInstruction inst(RISCVOp::DIV);
         inst.addReg(rd).addReg(rs1).addReg(rs2);
