@@ -10,6 +10,27 @@
 
 namespace toyc::backend {
 
+namespace {
+
+struct LiveInterval {
+    int valueId = -1;
+    int start = 0;
+    int end = 0;
+    int uses = 0;
+};
+
+struct ActiveInterval {
+    int valueId = -1;
+    int end = 0;
+    int reg = 0;
+};
+
+constexpr std::size_t savedPoolSize() {
+    return 10;
+}
+
+} // namespace
+
 RegMapping RegisterAllocator::allocateToStack(
     const toyc::ir::IRFunction& func,
     const FrameInfo& frame
@@ -86,19 +107,32 @@ RegMapping RegisterAllocator::allocateWithRegisters(
 
     std::set<int> valueIds;
     std::unordered_map<int, int> useCount;
+    std::unordered_map<int, LiveInterval> intervals;
 
+    int instIndex = 0;
     for (const auto& block : func.blocks) {
         for (const auto& inst : block.instructions()) {
             if (inst.result.has_value() && inst.result->id >= 0 &&
                 inst.op != toyc::ir::IROp::Alloca &&
                 inst.op != toyc::ir::IROp::Const) {
+                LiveInterval interval;
+                interval.valueId = inst.result->id;
+                interval.start = instIndex;
+                interval.end = instIndex;
+                intervals[inst.result->id] = interval;
                 valueIds.insert(inst.result->id);
             }
             for (const auto& operand : inst.operands) {
                 if (operand.id >= 0) {
                     useCount[operand.id]++;
+                    auto intervalIt = intervals.find(operand.id);
+                    if (intervalIt != intervals.end()) {
+                        intervalIt->second.end = std::max(intervalIt->second.end, instIndex);
+                        intervalIt->second.uses++;
+                    }
                 }
             }
+            ++instIndex;
         }
     }
 
@@ -111,7 +145,7 @@ RegMapping RegisterAllocator::allocateWithRegisters(
             if (frame.localVarOffsets.find(inst.result->id) != frame.localVarOffsets.end()) {
                 continue;
             }
-            if (savedIdx < sizeof(kSavedPool) / sizeof(kSavedPool[0])) {
+            if (savedIdx < savedPoolSize()) {
                 mapping[inst.result->id] = RegOrSlot::fromReg(kSavedPool[savedIdx++]);
             } else {
                 fallback = true;
@@ -133,25 +167,91 @@ RegMapping RegisterAllocator::allocateWithRegisters(
             const auto addrIt = mapping.find(inst.operands[0].id);
             if (addrIt != mapping.end() && addrIt->second.isReg) {
                 valueIds.erase(inst.result->id);
+                intervals.erase(inst.result->id);
             }
         }
     }
 
-    std::vector<int> orderedValues(valueIds.begin(), valueIds.end());
-    std::stable_sort(orderedValues.begin(), orderedValues.end(), [&](int lhs, int rhs) {
-        const int lhsUses = useCount[lhs];
-        const int rhsUses = useCount[rhs];
-        if (lhsUses != rhsUses) {
-            return lhsUses > rhsUses;
+    std::vector<LiveInterval> orderedIntervals;
+    orderedIntervals.reserve(valueIds.size());
+    for (int valueId : valueIds) {
+        const auto intervalIt = intervals.find(valueId);
+        if (intervalIt == intervals.end() || useCount[valueId] == 0) {
+            continue;
         }
-        return lhs < rhs;
+        LiveInterval interval = intervalIt->second;
+        interval.uses = useCount[valueId];
+        orderedIntervals.push_back(interval);
+    }
+
+    std::stable_sort(orderedIntervals.begin(), orderedIntervals.end(), [](const LiveInterval& lhs, const LiveInterval& rhs) {
+        if (lhs.start != rhs.start) {
+            return lhs.start < rhs.start;
+        }
+        if (lhs.end != rhs.end) {
+            return lhs.end < rhs.end;
+        }
+        return lhs.valueId < rhs.valueId;
     });
 
-    for (int valueId : orderedValues) {
-        if (savedIdx < sizeof(kSavedPool) / sizeof(kSavedPool[0])) {
-            mapping[valueId] = RegOrSlot::fromReg(kSavedPool[savedIdx++]);
+    std::vector<int> freeRegs;
+    for (std::size_t idx = savedPoolSize(); idx > savedIdx; --idx) {
+        freeRegs.push_back(kSavedPool[idx - 1]);
+    }
+
+    std::vector<ActiveInterval> active;
+    const auto expireOldIntervals = [&](int start) {
+        std::vector<ActiveInterval> stillActive;
+        stillActive.reserve(active.size());
+        for (const ActiveInterval& item : active) {
+            if (item.end < start) {
+                freeRegs.push_back(item.reg);
+            } else {
+                stillActive.push_back(item);
+            }
+        }
+        active = std::move(stillActive);
+    };
+
+    const auto addActive = [&](const LiveInterval& interval, int reg) {
+        active.push_back(ActiveInterval{interval.valueId, interval.end, reg});
+        std::stable_sort(active.begin(), active.end(), [](const ActiveInterval& lhs, const ActiveInterval& rhs) {
+            if (lhs.end != rhs.end) {
+                return lhs.end < rhs.end;
+            }
+            return lhs.valueId < rhs.valueId;
+        });
+    };
+
+    for (const LiveInterval& interval : orderedIntervals) {
+        expireOldIntervals(interval.start);
+
+        if (!freeRegs.empty()) {
+            const int reg = freeRegs.back();
+            freeRegs.pop_back();
+            mapping[interval.valueId] = RegOrSlot::fromReg(reg);
+            addActive(interval, reg);
+            continue;
+        }
+
+        auto spillIt = std::max_element(active.begin(), active.end(), [](const ActiveInterval& lhs, const ActiveInterval& rhs) {
+            if (lhs.end != rhs.end) {
+                return lhs.end < rhs.end;
+            }
+            return lhs.valueId < rhs.valueId;
+        });
+
+        if (spillIt != active.end() && spillIt->end > interval.end) {
+            const int reg = spillIt->reg;
+            assignSpill(spillIt->valueId);
+            if (fallback) {
+                return {};
+            }
+            active.erase(spillIt);
+            mapping[interval.valueId] = RegOrSlot::fromReg(reg);
+            addActive(interval, reg);
         } else {
-            assignSpill(valueId);
+            assignSpill(interval.valueId);
             if (fallback) {
                 return {};
             }
