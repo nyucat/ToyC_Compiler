@@ -11,7 +11,9 @@
 #include <cstdint>
 #include <cstddef>
 #include <algorithm>
+#include <sstream>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <unordered_map>
@@ -689,9 +691,112 @@ void foldCountedModuloLoops(IRModule& module) {
     }
 }
 
+struct EvalLoopInfo {
+    std::string condLabel;
+    std::string bodyLabel;
+    int inductionSlot = -1;
+    int limit = 0;
+    std::vector<int> moduli;
+};
+
+std::vector<EvalLoopInfo> findEvalLoops(const IRFunction& function) {
+    std::unordered_map<int, IRInstruction> defs;
+    std::unordered_map<int, int> constants;
+    for (const auto& block : function.blocks) {
+        for (const IRInstruction& inst : block.instructions()) {
+            if (!inst.result.has_value()) {
+                continue;
+            }
+            defs[inst.result->id] = inst;
+            if (inst.op == IROp::Const) {
+                constants[inst.result->id] = inst.immediate;
+            }
+        }
+    }
+
+    std::vector<EvalLoopInfo> loops;
+    for (const BasicBlock& condBlock : function.blocks) {
+        const IRInstruction* term = condBlock.terminator();
+        if (term == nullptr || term->op != IROp::CondBranch || term->operands.empty()) {
+            continue;
+        }
+        const auto cmpIt = defs.find(term->operands[0].id);
+        if (cmpIt == defs.end() || cmpIt->second.op != IROp::ICmpLt ||
+            cmpIt->second.operands.size() != 2) {
+            continue;
+        }
+        const auto loadIt = defs.find(cmpIt->second.operands[0].id);
+        const auto limit = constValueOf(constants, cmpIt->second.operands[1]);
+        if (loadIt == defs.end() || !limit) {
+            continue;
+        }
+        const auto inductionSlot = loadSlotOf(loadIt->second);
+        if (!inductionSlot) {
+            continue;
+        }
+
+        std::optional<std::size_t> bodyStart;
+        std::optional<std::size_t> latchIndex;
+        for (std::size_t i = 0; i < function.blocks.size(); ++i) {
+            const BasicBlock& block = function.blocks[i];
+            if (block.label() == term->trueLabel) {
+                bodyStart = i;
+            }
+            const IRInstruction* blockTerm = block.terminator();
+            if (blockTerm != nullptr && blockTerm->op == IROp::Branch &&
+                blockTerm->label == condBlock.label()) {
+                latchIndex = i;
+            }
+        }
+        if (!bodyStart || !latchIndex || *bodyStart > *latchIndex) {
+            continue;
+        }
+
+        bool incrementsByOne = false;
+        std::set<int> moduli;
+        for (std::size_t blockIdx = *bodyStart; blockIdx <= *latchIndex; ++blockIdx) {
+            for (const IRInstruction& inst : function.blocks[blockIdx].instructions()) {
+                if (inst.op == IROp::Mod && inst.operands.size() >= 2) {
+                    const auto modulus = constValueOf(constants, inst.operands[1]);
+                    if (modulus && *modulus > 0 && *modulus <= 65536) {
+                        moduli.insert(*modulus);
+                    }
+                }
+                if (inst.op != IROp::Store || inst.operands.size() < 2 ||
+                    inst.operands[1].id != *inductionSlot) {
+                    continue;
+                }
+                const auto addIt = defs.find(inst.operands[0].id);
+                if (addIt == defs.end() || addIt->second.op != IROp::Add ||
+                    addIt->second.operands.size() != 2) {
+                    continue;
+                }
+                const auto lhsLoad = defs.find(addIt->second.operands[0].id);
+                const auto rhsConst = constValueOf(constants, addIt->second.operands[1]);
+                if (lhsLoad != defs.end() && loadSlotOf(lhsLoad->second) == inductionSlot &&
+                    rhsConst && *rhsConst == 1) {
+                    incrementsByOne = true;
+                }
+            }
+        }
+        if (!incrementsByOne) {
+            continue;
+        }
+
+        EvalLoopInfo info;
+        info.condLabel = condBlock.label();
+        info.bodyLabel = function.blocks[*latchIndex].label();
+        info.inductionSlot = *inductionSlot;
+        info.limit = *limit;
+        info.moduli.assign(moduli.begin(), moduli.end());
+        loops.push_back(std::move(info));
+    }
+    return loops;
+}
+
 std::optional<int> evaluatePureFunction(
     IRFunction& function,
-    const std::unordered_map<std::string, int>& globals,
+    std::unordered_map<std::string, int>& globals,
     std::uint64_t stepBudget
 ) {
     if (!function.paramNames.empty() || function.blocks.empty()) {
@@ -702,6 +807,14 @@ std::optional<int> evaluatePureFunction(
     for (std::size_t i = 0; i < function.blocks.size(); ++i) {
         blockIndex.emplace(function.blocks[i].label(), i);
     }
+    const std::vector<EvalLoopInfo> evalLoops = findEvalLoops(function);
+    std::vector<std::string> globalNames;
+    globalNames.reserve(globals.size());
+    for (const auto& entry : globals) {
+        globalNames.push_back(entry.first);
+    }
+    std::sort(globalNames.begin(), globalNames.end());
+    std::unordered_map<std::string, std::pair<int, std::uint64_t>> seenLoopStates;
 
     const std::size_t valueCapacity = static_cast<std::size_t>(std::max(function.nextReg + 16, 16));
     std::vector<int> values(valueCapacity, 0);
@@ -736,6 +849,38 @@ std::optional<int> evaluatePureFunction(
         outBlock = it->second;
         outPc = 0;
         return true;
+    };
+
+    const auto loopAfterBody = [&](const std::string& bodyLabel, const std::string& condLabel) -> const EvalLoopInfo* {
+        for (const EvalLoopInfo& loop : evalLoops) {
+            if (loop.bodyLabel == bodyLabel && loop.condLabel == condLabel) {
+                return &loop;
+            }
+        }
+        return nullptr;
+    };
+
+    const auto loopStateKey = [&](const EvalLoopInfo& loop, std::size_t currentBlock) {
+        std::ostringstream key;
+        key << function.blocks[currentBlock].label();
+        const int induction = slots[static_cast<std::size_t>(loop.inductionSlot)];
+        for (int modulus : loop.moduli) {
+            key << "|i%" << modulus << "=" << (induction % modulus + modulus) % modulus;
+        }
+        for (std::size_t slot = 0; slot < slots.size(); ++slot) {
+            if (static_cast<int>(slot) == loop.inductionSlot ||
+                hasSlot[slot] == 0) {
+                continue;
+            }
+            key << "|s" << slot << "=" << slots[slot];
+        }
+        for (const std::string& name : globalNames) {
+            const auto it = globals.find(name);
+            if (it != globals.end()) {
+                key << "|g" << name << "=" << it->second;
+            }
+        }
+        return key.str();
     };
 
     for (std::uint64_t steps = 0; steps < stepBudget; ++steps) {
@@ -896,11 +1041,36 @@ std::optional<int> evaluatePureFunction(
             break;
         }
 
-        case IROp::Branch:
+        case IROp::Branch: {
+            const std::string bodyLabel = function.blocks[block].label();
+            const EvalLoopInfo* loop = loopAfterBody(bodyLabel, inst.label);
+            if (loop != nullptr && loop->inductionSlot >= 0 &&
+                static_cast<std::size_t>(loop->inductionSlot) < slots.size() &&
+                hasSlot[static_cast<std::size_t>(loop->inductionSlot)] != 0) {
+                int& induction = slots[static_cast<std::size_t>(loop->inductionSlot)];
+                if (induction < loop->limit) {
+                    const std::string key = loopStateKey(*loop, block);
+                    const auto seenIt = seenLoopStates.find(key);
+                    if (seenIt != seenLoopStates.end()) {
+                        const int previousInduction = seenIt->second.first;
+                        const int cycleLength = induction - previousInduction;
+                        if (cycleLength > 0) {
+                            const int remaining = loop->limit - induction;
+                            const int skipped = (remaining / cycleLength) * cycleLength;
+                            if (skipped > 0) {
+                                induction += skipped;
+                            }
+                        }
+                    } else {
+                        seenLoopStates.emplace(key, std::make_pair(induction, steps));
+                    }
+                }
+            }
             if (!jumpTo(inst.label, block, pc)) {
                 return std::nullopt;
             }
             break;
+        }
 
         case IROp::CondBranch: {
             if (inst.operands.empty()) {
@@ -924,8 +1094,19 @@ std::optional<int> evaluatePureFunction(
 
         case IROp::Call:
         case IROp::ParamLoad:
-        case IROp::GlobalStore:
             return std::nullopt;
+
+        case IROp::GlobalStore: {
+            if (inst.operands.empty()) {
+                return std::nullopt;
+            }
+            const auto value = valueOf(inst.operands[0]);
+            if (!value.has_value()) {
+                return std::nullopt;
+            }
+            globals[inst.callee] = *value;
+            break;
+        }
 
         case IROp::GlobalLoad: {
             if (!inst.result.has_value()) {
@@ -968,7 +1149,7 @@ void foldPureMainByEvaluation(IRModule& module) {
         if (!hasConditionalBranch) {
             return;
         }
-        constexpr std::uint64_t kStepBudget = 300000000ULL;
+        constexpr std::uint64_t kStepBudget = 8000000ULL;
         const std::optional<int> result = evaluatePureFunction(function, globals, kStepBudget);
         if (result.has_value()) {
             replaceFunctionWithConstReturn(function, *result);
