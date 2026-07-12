@@ -81,6 +81,78 @@ int resultDestReg(int vreg, const RegMapping& regMap, int scratch) {
     return scratch;
 }
 
+bool emitMulByConstant(int rd, int rs, int multiplier, std::vector<RISCVInstruction>& insts) {
+    if (multiplier == 0) {
+        insts.push_back(RISCVInstruction::makeLI(rd, 0));
+        return true;
+    }
+    if (multiplier == 1) {
+        if (rd != rs) {
+            insts.push_back(RISCVInstruction::makeMV(rd, rs));
+        }
+        return true;
+    }
+    if (multiplier == -1) {
+        insts.push_back(RISCVInstruction::makeNEG(rd, rs));
+        return true;
+    }
+
+    const bool negative = multiplier < 0;
+    const long long magnitude = negative ? -static_cast<long long>(multiplier) : multiplier;
+    if (magnitude <= 0 || magnitude >= (1LL << 31)) {
+        return false;
+    }
+
+    std::vector<int> bits;
+    for (int shift = 0; shift < 31; ++shift) {
+        if ((magnitude & (1LL << shift)) != 0) {
+            bits.push_back(shift);
+        }
+    }
+
+    if (bits.size() > 2) {
+        const int shift = powerOfTwoShift(static_cast<int>(magnitude + 1));
+        if (shift > 0) {
+            int src = rs;
+            if (rd == rs) {
+                insts.push_back(RISCVInstruction::makeMV(Reg::T6, rs));
+                src = Reg::T6;
+            }
+            insts.push_back(RISCVInstruction(RISCVOp::SLLI).addReg(rd).addReg(src).addImm(shift));
+            insts.push_back(RISCVInstruction::makeSUB(rd, rd, src));
+            if (negative) {
+                insts.push_back(RISCVInstruction::makeNEG(rd, rd));
+            }
+            return true;
+        }
+        return false;
+    }
+
+    int src = rs;
+    if (rd == rs && bits.size() == 2) {
+        insts.push_back(RISCVInstruction::makeMV(Reg::T6, rs));
+        src = Reg::T6;
+    }
+
+    if (bits.size() == 1) {
+        insts.push_back(RISCVInstruction(RISCVOp::SLLI).addReg(rd).addReg(src).addImm(bits[0]));
+    } else {
+        if (bits[0] == 0) {
+            insts.push_back(RISCVInstruction(RISCVOp::SLLI).addReg(rd).addReg(src).addImm(bits[1]));
+            insts.push_back(RISCVInstruction::makeADD(rd, rd, src));
+        } else {
+            insts.push_back(RISCVInstruction(RISCVOp::SLLI).addReg(rd).addReg(src).addImm(bits[0]));
+            insts.push_back(RISCVInstruction(RISCVOp::SLLI).addReg(Reg::T5).addReg(src).addImm(bits[1]));
+            insts.push_back(RISCVInstruction::makeADD(rd, rd, Reg::T5));
+        }
+    }
+
+    if (negative) {
+        insts.push_back(RISCVInstruction::makeNEG(rd, rd));
+    }
+    return true;
+}
+
 std::set<int> usedSavedRegsFromMapping(const RegMapping& regMap) {
     std::set<int> regs;
     for (const auto& entry : regMap) {
@@ -559,14 +631,8 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
 
                 const auto rhsConst = constValues_.find(inst.operands[1].id);
                 if (rhsConst != constValues_.end()) {
-                    const int shift = powerOfTwoShift(rhsConst->second);
-                    if (shift >= 0) {
-                        if (shift == 0) {
-                            storeResult(inst.result->id, rs1, regMap, result);
-                        } else {
-                            result.push_back(RISCVInstruction(RISCVOp::SLLI).addReg(rd).addReg(rs1).addImm(shift));
-                            storeResult(inst.result->id, rd, regMap, result);
-                        }
+                    if (emitMulByConstant(rd, rs1, rhsConst->second, result)) {
+                        storeResult(inst.result->id, rd, regMap, result);
                         break;
                     }
                 }
@@ -581,8 +647,27 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
         case toyc::ir::IROp::Div: {
             if (inst.result.has_value() && inst.operands.size() >= 2) {
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
-                int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
                 int rd = resultDestReg(inst.result->id, regMap, Reg::T2);
+
+                const auto rhsConst = constValues_.find(inst.operands[1].id);
+                if (rhsConst != constValues_.end()) {
+                    const int divisor = rhsConst->second;
+                    const int shift = powerOfTwoShift(divisor);
+                    if (shift >= 0) {
+                        if (shift == 0) {
+                            storeResult(inst.result->id, rs1, regMap, result);
+                        } else {
+                            result.push_back(RISCVInstruction(RISCVOp::SRAI).addReg(Reg::T6).addReg(rs1).addImm(31));
+                            result.push_back(RISCVInstruction::makeANDI(Reg::T6, Reg::T6, divisor - 1));
+                            result.push_back(RISCVInstruction::makeADD(rd, rs1, Reg::T6));
+                            result.push_back(RISCVInstruction(RISCVOp::SRAI).addReg(rd).addReg(rd).addImm(shift));
+                            storeResult(inst.result->id, rd, regMap, result);
+                        }
+                        break;
+                    }
+                }
+
+                int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
                 result.push_back(RISCVInstruction::makeDIV(rd, rs1, rs2));
                 storeResult(inst.result->id, rd, regMap, result);
             }
