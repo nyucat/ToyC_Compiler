@@ -108,6 +108,7 @@ RegMapping RegisterAllocator::allocateWithRegisters(
     std::set<int> valueIds;
     std::unordered_map<int, int> useCount;
     std::unordered_map<int, LiveInterval> intervals;
+    std::unordered_map<int, std::vector<int>> usePositions;
 
     int instIndex = 0;
     for (const auto& block : func.blocks) {
@@ -125,14 +126,22 @@ RegMapping RegisterAllocator::allocateWithRegisters(
             for (const auto& operand : inst.operands) {
                 if (operand.id >= 0) {
                     useCount[operand.id]++;
-                    auto intervalIt = intervals.find(operand.id);
-                    if (intervalIt != intervals.end()) {
-                        intervalIt->second.end = std::max(intervalIt->second.end, instIndex);
-                        intervalIt->second.uses++;
-                    }
+                    usePositions[operand.id].push_back(instIndex);
                 }
             }
             ++instIndex;
+        }
+    }
+
+    for (auto& entry : intervals) {
+        const auto useIt = usePositions.find(entry.first);
+        if (useIt == usePositions.end()) {
+            continue;
+        }
+        entry.second.uses = static_cast<int>(useIt->second.size());
+        for (int usePos : useIt->second) {
+            entry.second.start = std::min(entry.second.start, usePos);
+            entry.second.end = std::max(entry.second.end, usePos);
         }
     }
 
