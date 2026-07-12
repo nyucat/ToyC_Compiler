@@ -4,11 +4,142 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <deque>
+#include <map>
 #include <set>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace toyc::backend {
+
+namespace {
+
+using BlockSet = std::unordered_set<toyc::ir::BasicBlock*>;
+
+std::vector<toyc::ir::BasicBlock*> sortedBlocks(toyc::ir::IRFunction& func) {
+    std::vector<toyc::ir::BasicBlock*> blocks;
+    blocks.reserve(func.blocks.size());
+    for (auto& block : func.blocks) {
+        blocks.push_back(&block);
+    }
+    return blocks;
+}
+
+BlockSet intersectSets(const BlockSet& lhs, const BlockSet& rhs) {
+    const BlockSet* smaller = &lhs;
+    const BlockSet* larger = &rhs;
+    if (smaller->size() > larger->size()) {
+        std::swap(smaller, larger);
+    }
+
+    BlockSet result;
+    for (toyc::ir::BasicBlock* block : *smaller) {
+        if (larger->count(block) > 0) {
+            result.insert(block);
+        }
+    }
+    return result;
+}
+
+std::map<std::string, int> computeBlockWeights(const toyc::ir::IRFunction& func) {
+    std::map<std::string, int> weights;
+    for (const auto& block : func.blocks) {
+        weights[block.label()] = 1;
+    }
+    if (func.blocks.empty()) {
+        return weights;
+    }
+
+    toyc::ir::IRFunction cfgFunc = func;
+    toyc::ir::buildCFG(cfgFunc);
+
+    std::vector<toyc::ir::BasicBlock*> blocks = sortedBlocks(cfgFunc);
+    BlockSet allBlocks;
+    for (toyc::ir::BasicBlock* block : blocks) {
+        allBlocks.insert(block);
+    }
+
+    std::unordered_map<toyc::ir::BasicBlock*, BlockSet> dominators;
+    toyc::ir::BasicBlock* entry = &cfgFunc.blocks.front();
+    for (toyc::ir::BasicBlock* block : blocks) {
+        if (block == entry) {
+            dominators[block] = BlockSet{block};
+        } else {
+            dominators[block] = allBlocks;
+        }
+    }
+
+    bool changed = false;
+    do {
+        changed = false;
+        for (toyc::ir::BasicBlock* block : blocks) {
+            if (block == entry) {
+                continue;
+            }
+
+            BlockSet next;
+            bool firstPred = true;
+            for (toyc::ir::BasicBlock* pred : block->predecessors()) {
+                if (firstPred) {
+                    next = dominators[pred];
+                    firstPred = false;
+                } else {
+                    next = intersectSets(next, dominators[pred]);
+                }
+            }
+            if (firstPred) {
+                next.clear();
+            }
+            next.insert(block);
+
+            if (next != dominators[block]) {
+                dominators[block] = std::move(next);
+                changed = true;
+            }
+        }
+    } while (changed);
+
+    std::map<std::string, int> loopDepths;
+    for (toyc::ir::BasicBlock* header : blocks) {
+        for (toyc::ir::BasicBlock* pred : header->predecessors()) {
+            const auto domIt = dominators.find(pred);
+            if (domIt == dominators.end() || domIt->second.count(header) == 0) {
+                continue;
+            }
+
+            BlockSet loopBody{header, pred};
+            std::deque<toyc::ir::BasicBlock*> worklist;
+            worklist.push_back(pred);
+            while (!worklist.empty()) {
+                toyc::ir::BasicBlock* current = worklist.front();
+                worklist.pop_front();
+                for (toyc::ir::BasicBlock* loopPred : current->predecessors()) {
+                    if (loopBody.insert(loopPred).second && loopPred != header) {
+                        worklist.push_back(loopPred);
+                    }
+                }
+            }
+
+            for (toyc::ir::BasicBlock* block : loopBody) {
+                loopDepths[block->label()]++;
+            }
+        }
+    }
+
+    for (const auto& [label, depth] : loopDepths) {
+        int weight = 1;
+        for (int i = 0; i < std::min(depth, 4); ++i) {
+            weight *= 10;
+        }
+        weights[label] = weight;
+    }
+
+    return weights;
+}
+
+} // namespace
 
 RegMapping RegisterAllocator::allocateToStack(
     const toyc::ir::IRFunction& func,
@@ -86,8 +217,11 @@ RegMapping RegisterAllocator::allocateWithRegisters(
 
     std::set<int> valueIds;
     std::unordered_map<int, int> useCount;
+    const std::map<std::string, int> blockWeights = computeBlockWeights(func);
 
     for (const auto& block : func.blocks) {
+        const auto weightIt = blockWeights.find(block.label());
+        const int blockWeight = weightIt == blockWeights.end() ? 1 : weightIt->second;
         for (const auto& inst : block.instructions()) {
             if (inst.result.has_value() && inst.result->id >= 0 &&
                 inst.op != toyc::ir::IROp::Alloca &&
@@ -96,7 +230,7 @@ RegMapping RegisterAllocator::allocateWithRegisters(
             }
             for (const auto& operand : inst.operands) {
                 if (operand.id >= 0) {
-                    useCount[operand.id]++;
+                    useCount[operand.id] += blockWeight;
                 }
             }
         }
