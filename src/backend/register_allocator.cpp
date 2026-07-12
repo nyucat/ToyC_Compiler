@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <set>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -154,6 +155,8 @@ RegMapping RegisterAllocator::allocateWithRegisters(
     std::unordered_map<int, LiveInterval> intervals;
     std::unordered_map<int, std::vector<int>> usePositions;
     std::unordered_map<std::string, std::size_t> blockIndexByLabel;
+    std::vector<int> blockStart(func.blocks.size(), 0);
+    std::vector<int> blockEnd(func.blocks.size(), 0);
     for (std::size_t i = 0; i < func.blocks.size(); ++i) {
         blockIndexByLabel[func.blocks[i].label()] = i;
     }
@@ -186,6 +189,7 @@ RegMapping RegisterAllocator::allocateWithRegisters(
     for (std::size_t blockIdx = 0; blockIdx < func.blocks.size(); ++blockIdx) {
         const auto& block = func.blocks[blockIdx];
         const int blockWeight = blockWeights[blockIdx];
+        blockStart[blockIdx] = instIndex;
         for (const auto& inst : block.instructions()) {
             if (inst.result.has_value() && inst.result->id >= 0 &&
                 inst.op != toyc::ir::IROp::Alloca &&
@@ -206,6 +210,7 @@ RegMapping RegisterAllocator::allocateWithRegisters(
             }
             ++instIndex;
         }
+        blockEnd[blockIdx] = std::max(blockStart[blockIdx], instIndex - 1);
     }
 
     for (auto& entry : intervals) {
@@ -253,6 +258,89 @@ RegMapping RegisterAllocator::allocateWithRegisters(
             if (addrIt != mapping.end() && addrIt->second.isReg) {
                 valueIds.erase(inst.result->id);
                 intervals.erase(inst.result->id);
+            }
+        }
+    }
+
+    std::vector<std::set<int>> blockUse(func.blocks.size());
+    std::vector<std::set<int>> blockDef(func.blocks.size());
+    std::vector<std::set<int>> liveIn(func.blocks.size());
+    std::vector<std::set<int>> liveOut(func.blocks.size());
+    std::vector<std::vector<std::size_t>> successors(func.blocks.size());
+
+    for (std::size_t blockIdx = 0; blockIdx < func.blocks.size(); ++blockIdx) {
+        const auto& block = func.blocks[blockIdx];
+        for (const auto& inst : block.instructions()) {
+            for (const auto& operand : inst.operands) {
+                if (valueIds.find(operand.id) != valueIds.end() &&
+                    blockDef[blockIdx].find(operand.id) == blockDef[blockIdx].end()) {
+                    blockUse[blockIdx].insert(operand.id);
+                }
+            }
+            if (inst.result.has_value() &&
+                valueIds.find(inst.result->id) != valueIds.end()) {
+                blockDef[blockIdx].insert(inst.result->id);
+            }
+        }
+
+        const auto* term = block.terminator();
+        if (term == nullptr) {
+            continue;
+        }
+        if (term->op == toyc::ir::IROp::Branch) {
+            const auto targetIt = blockIndexByLabel.find(term->label);
+            if (targetIt != blockIndexByLabel.end()) {
+                successors[blockIdx].push_back(targetIt->second);
+            }
+        } else if (term->op == toyc::ir::IROp::CondBranch) {
+            const auto trueIt = blockIndexByLabel.find(term->trueLabel);
+            if (trueIt != blockIndexByLabel.end()) {
+                successors[blockIdx].push_back(trueIt->second);
+            }
+            const auto falseIt = blockIndexByLabel.find(term->falseLabel);
+            if (falseIt != blockIndexByLabel.end() &&
+                falseIt->second != (trueIt != blockIndexByLabel.end() ? trueIt->second : func.blocks.size())) {
+                successors[blockIdx].push_back(falseIt->second);
+            }
+        }
+    }
+
+    bool changed = false;
+    do {
+        changed = false;
+        for (std::size_t reverseIdx = func.blocks.size(); reverseIdx > 0; --reverseIdx) {
+            const std::size_t blockIdx = reverseIdx - 1;
+            std::set<int> nextLiveOut;
+            for (std::size_t succIdx : successors[blockIdx]) {
+                nextLiveOut.insert(liveIn[succIdx].begin(), liveIn[succIdx].end());
+            }
+
+            std::set<int> nextLiveIn = blockUse[blockIdx];
+            for (int valueId : nextLiveOut) {
+                if (blockDef[blockIdx].find(valueId) == blockDef[blockIdx].end()) {
+                    nextLiveIn.insert(valueId);
+                }
+            }
+
+            if (nextLiveIn != liveIn[blockIdx] || nextLiveOut != liveOut[blockIdx]) {
+                liveIn[blockIdx] = std::move(nextLiveIn);
+                liveOut[blockIdx] = std::move(nextLiveOut);
+                changed = true;
+            }
+        }
+    } while (changed);
+
+    for (std::size_t blockIdx = 0; blockIdx < func.blocks.size(); ++blockIdx) {
+        for (int valueId : liveIn[blockIdx]) {
+            const auto intervalIt = intervals.find(valueId);
+            if (intervalIt != intervals.end()) {
+                intervalIt->second.start = std::min(intervalIt->second.start, blockStart[blockIdx]);
+            }
+        }
+        for (int valueId : liveOut[blockIdx]) {
+            const auto intervalIt = intervals.find(valueId);
+            if (intervalIt != intervals.end()) {
+                intervalIt->second.end = std::max(intervalIt->second.end, blockEnd[blockIdx]);
             }
         }
     }
