@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <algorithm>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <unordered_map>
@@ -444,6 +445,156 @@ void eliminateTailRecursion(IRModule& module) {
     }
 }
 
+bool isHoistableLoopInvariantOp(IROp op) {
+    switch (op) {
+    case IROp::Const:
+    case IROp::Move:
+    case IROp::Add:
+    case IROp::Sub:
+    case IROp::Mul:
+    case IROp::ICmpEq:
+    case IROp::ICmpNe:
+    case IROp::ICmpLt:
+    case IROp::ICmpLe:
+    case IROp::ICmpGt:
+    case IROp::ICmpGe:
+    case IROp::Not:
+    case IROp::Neg:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool hoistLoopInvariants(IRFunction& function) {
+    buildCFG(function);
+    if (function.blocks.size() < 3) {
+        return false;
+    }
+
+    std::unordered_map<const BasicBlock*, std::size_t> blockIndex;
+    for (std::size_t i = 0; i < function.blocks.size(); ++i) {
+        blockIndex.emplace(&function.blocks[i], i);
+    }
+
+    bool changed = false;
+    for (std::size_t latchIdx = 0; latchIdx < function.blocks.size(); ++latchIdx) {
+        BasicBlock& latch = function.blocks[latchIdx];
+        const IRInstruction* term = latch.terminator();
+        if (term == nullptr || term->op != IROp::Branch) {
+            continue;
+        }
+
+        auto headerIt = std::find_if(function.blocks.begin(), function.blocks.end(), [&](const BasicBlock& block) {
+            return block.label() == term->label;
+        });
+        if (headerIt == function.blocks.end()) {
+            continue;
+        }
+        const std::size_t headerIdx = static_cast<std::size_t>(std::distance(function.blocks.begin(), headerIt));
+        if (headerIdx > latchIdx) {
+            continue;
+        }
+
+        std::set<std::size_t> loopBlocks;
+        loopBlocks.insert(headerIdx);
+        loopBlocks.insert(latchIdx);
+        std::vector<BasicBlock*> worklist{&latch};
+        while (!worklist.empty()) {
+            BasicBlock* block = worklist.back();
+            worklist.pop_back();
+            for (BasicBlock* pred : block->predecessors()) {
+                const auto predIt = blockIndex.find(pred);
+                if (predIt == blockIndex.end()) {
+                    continue;
+                }
+                const std::size_t predIdx = predIt->second;
+                if (predIdx < headerIdx || predIdx > latchIdx) {
+                    continue;
+                }
+                if (loopBlocks.insert(predIdx).second && predIdx != headerIdx) {
+                    worklist.push_back(pred);
+                }
+            }
+        }
+
+        BasicBlock* preheader = nullptr;
+        for (BasicBlock* pred : function.blocks[headerIdx].predecessors()) {
+            const auto predIt = blockIndex.find(pred);
+            if (predIt == blockIndex.end() || loopBlocks.count(predIt->second) > 0) {
+                continue;
+            }
+            if (preheader != nullptr) {
+                preheader = nullptr;
+                break;
+            }
+            preheader = pred;
+        }
+        if (preheader == nullptr) {
+            continue;
+        }
+
+        std::unordered_set<int> loopDefined;
+        for (std::size_t blockIdx : loopBlocks) {
+            for (const IRInstruction& inst : function.blocks[blockIdx].instructions()) {
+                if (inst.result.has_value() && inst.result->id >= 0) {
+                    loopDefined.insert(inst.result->id);
+                }
+            }
+        }
+
+        std::vector<IRInstruction> hoisted;
+        bool loopChanged = true;
+        while (loopChanged) {
+            loopChanged = false;
+            for (std::size_t blockIdx : loopBlocks) {
+                auto& insts = function.blocks[blockIdx].instructions();
+                std::vector<IRInstruction> kept;
+                kept.reserve(insts.size());
+
+                for (auto& inst : insts) {
+                    if (!inst.result.has_value() || !isHoistableLoopInvariantOp(inst.op)) {
+                        kept.push_back(std::move(inst));
+                        continue;
+                    }
+
+                    bool invariant = true;
+                    for (const IRValue& operand : inst.operands) {
+                        if (operand.id >= 0 && loopDefined.count(operand.id) > 0) {
+                            invariant = false;
+                            break;
+                        }
+                    }
+
+                    if (!invariant) {
+                        kept.push_back(std::move(inst));
+                        continue;
+                    }
+
+                    loopDefined.erase(inst.result->id);
+                    hoisted.push_back(std::move(inst));
+                    loopChanged = true;
+                    changed = true;
+                }
+
+                insts = std::move(kept);
+            }
+        }
+
+        if (!hoisted.empty()) {
+            auto& preheaderInsts = preheader->instructions();
+            auto insertPos = preheaderInsts.end();
+            if (!preheaderInsts.empty() && preheader->terminator() != nullptr) {
+                insertPos = preheaderInsts.end() - 1;
+            }
+            preheaderInsts.insert(insertPos, hoisted.begin(), hoisted.end());
+            buildCFG(function);
+        }
+    }
+
+    return changed;
+}
+
 void eliminateDeadFunctions(IRModule& module) {
     std::unordered_map<std::string, const IRFunction*> functions;
     for (const IRFunction& function : module.functions) {
@@ -508,6 +659,9 @@ void runOptimizationPipeline(toyc::ir::IRModule& module, bool enableOpt) {
         constantFold.run(module);
         copyProp.run(module);
         runMem2RegLite(module);
+        for (IRFunction& function : module.functions) {
+            (void)hoistLoopInvariants(function);
+        }
         cse.run(module);
         cfgSimplify.run(module);
         deadCode.run(module);
