@@ -167,6 +167,53 @@ std::set<int> usedSavedRegsFromMapping(const RegMapping& regMap) {
     return regs;
 }
 
+bool isTempReg(int reg) {
+    return (reg >= Reg::T0 && reg <= Reg::T2) || (reg >= Reg::T3 && reg <= Reg::T6);
+}
+
+std::vector<RISCVInstruction> peepholeOptimize(std::vector<RISCVInstruction> insts) {
+    std::vector<RISCVInstruction> out;
+    out.reserve(insts.size());
+
+    for (std::size_t i = 0; i < insts.size(); ++i) {
+        RISCVInstruction inst = std::move(insts[i]);
+
+        if (inst.op == RISCVOp::MV && inst.operands.size() >= 2 &&
+            inst.operands[0].regId == inst.operands[1].regId) {
+            continue;
+        }
+
+        if (inst.op == RISCVOp::LI && inst.operands.size() >= 2 &&
+            isTempReg(inst.operands[0].regId) && i + 1 < insts.size()) {
+            const RISCVInstruction& next = insts[i + 1];
+            if (next.op == RISCVOp::MV && next.operands.size() >= 2 &&
+                next.operands[1].regId == inst.operands[0].regId) {
+                out.push_back(RISCVInstruction::makeLI(next.operands[0].regId, inst.operands[1].immValue));
+                ++i;
+                continue;
+            }
+        }
+
+        if (inst.op == RISCVOp::CALL && i + 2 < insts.size()) {
+            const RISCVInstruction& save = insts[i + 1];
+            const RISCVInstruction& restore = insts[i + 2];
+            if (save.op == RISCVOp::MV && restore.op == RISCVOp::MV &&
+                save.operands.size() >= 2 && restore.operands.size() >= 2 &&
+                save.operands[1].regId == Reg::A0 &&
+                restore.operands[0].regId == Reg::A0 &&
+                restore.operands[1].regId == save.operands[0].regId) {
+                out.push_back(std::move(inst));
+                i += 2;
+                continue;
+            }
+        }
+
+        out.push_back(std::move(inst));
+    }
+
+    return out;
+}
+
 FrameInfo compactFrame(
     const toyc::ir::IRFunction& func,
     const FrameInfo& oldFrame,
@@ -323,6 +370,8 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
     
     insts.push_back(RISCVInstruction::makeLABEL(exitLabel_));
     generateEpilogue(func, frame, insts);
+
+    insts = peepholeOptimize(std::move(insts));
     
     for (const auto& inst : insts) {
         out << inst.format() << "\n";
