@@ -173,6 +173,8 @@ RegMapping RegisterAllocator::allocateWithRegisters(
     std::vector<int> blockEnd(func.blocks.size(), 0);
     std::set<int> fusedCompareResults;
     std::set<int> directStoreResults;
+    std::set<int> constResults;
+    std::set<int> compareConstUses;
     std::unordered_map<int, int> preUseCount;
     for (std::size_t i = 0; i < func.blocks.size(); ++i) {
         blockIndexByLabel[func.blocks[i].label()] = i;
@@ -239,9 +241,18 @@ RegMapping RegisterAllocator::allocateWithRegisters(
         const int blockWeight = blockWeights[blockIdx];
         blockStart[blockIdx] = instIndex;
         for (const auto& inst : block.instructions()) {
+            if (inst.result.has_value() && inst.result->id >= 0 && inst.op == toyc::ir::IROp::Const) {
+                constResults.insert(inst.result->id);
+            }
+            if (isCompareOp(inst.op)) {
+                for (const auto& operand : inst.operands) {
+                    if (operand.id >= 0) {
+                        compareConstUses.insert(operand.id);
+                    }
+                }
+            }
             if (inst.result.has_value() && inst.result->id >= 0 &&
                 inst.op != toyc::ir::IROp::Alloca &&
-                inst.op != toyc::ir::IROp::Const &&
                 fusedCompareResults.find(inst.result->id) == fusedCompareResults.end() &&
                 directStoreResults.find(inst.result->id) == directStoreResults.end()) {
                 LiveInterval interval;
@@ -405,6 +416,10 @@ RegMapping RegisterAllocator::allocateWithRegisters(
         LiveInterval interval = intervalIt->second;
         interval.uses = useCount[valueId];
         interval.weightedUses = std::max(interval.uses, weightedUseCount[valueId]);
+        if (constResults.find(valueId) != constResults.end() &&
+            (interval.weightedUses < 10 || compareConstUses.find(valueId) == compareConstUses.end())) {
+            continue;
+        }
         orderedIntervals.push_back(interval);
     }
 
