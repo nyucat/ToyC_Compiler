@@ -73,6 +73,20 @@ bool lowerSpillCost(const ActiveInterval& lhs, const LiveInterval& rhs) {
     return lhs.valueId > rhs.valueId;
 }
 
+bool isCompareOp(toyc::ir::IROp op) {
+    switch (op) {
+    case toyc::ir::IROp::ICmpEq:
+    case toyc::ir::IROp::ICmpNe:
+    case toyc::ir::IROp::ICmpLt:
+    case toyc::ir::IROp::ICmpLe:
+    case toyc::ir::IROp::ICmpGt:
+    case toyc::ir::IROp::ICmpGe:
+        return true;
+    default:
+        return false;
+    }
+}
+
 } // namespace
 
 RegMapping RegisterAllocator::allocateToStack(
@@ -157,8 +171,42 @@ RegMapping RegisterAllocator::allocateWithRegisters(
     std::unordered_map<std::string, std::size_t> blockIndexByLabel;
     std::vector<int> blockStart(func.blocks.size(), 0);
     std::vector<int> blockEnd(func.blocks.size(), 0);
+    std::set<int> fusedCompareResults;
+    std::set<int> directStoreResults;
+    std::unordered_map<int, int> preUseCount;
     for (std::size_t i = 0; i < func.blocks.size(); ++i) {
         blockIndexByLabel[func.blocks[i].label()] = i;
+    }
+
+    for (const auto& block : func.blocks) {
+        for (const auto& inst : block.instructions()) {
+            for (const auto& operand : inst.operands) {
+                if (operand.id >= 0) {
+                    preUseCount[operand.id]++;
+                }
+            }
+        }
+    }
+
+    for (const auto& block : func.blocks) {
+        const auto& insts = block.instructions();
+        for (std::size_t i = 0; i + 1 < insts.size(); ++i) {
+            const auto& inst = insts[i];
+            const auto& next = insts[i + 1];
+            if (inst.result.has_value() && isCompareOp(inst.op) &&
+                next.op == toyc::ir::IROp::CondBranch && !next.operands.empty() &&
+                next.operands[0].id == inst.result->id &&
+                preUseCount[inst.result->id] == 1) {
+                fusedCompareResults.insert(inst.result->id);
+            }
+            if (inst.result.has_value() &&
+                next.op == toyc::ir::IROp::Store && next.operands.size() >= 2 &&
+                next.operands[0].id == inst.result->id &&
+                preUseCount[inst.result->id] == 1 &&
+                frame.localVarOffsets.find(next.operands[1].id) == frame.localVarOffsets.end()) {
+                directStoreResults.insert(inst.result->id);
+            }
+        }
     }
 
     std::vector<int> blockWeights(func.blocks.size(), 1);
@@ -193,7 +241,9 @@ RegMapping RegisterAllocator::allocateWithRegisters(
         for (const auto& inst : block.instructions()) {
             if (inst.result.has_value() && inst.result->id >= 0 &&
                 inst.op != toyc::ir::IROp::Alloca &&
-                inst.op != toyc::ir::IROp::Const) {
+                inst.op != toyc::ir::IROp::Const &&
+                fusedCompareResults.find(inst.result->id) == fusedCompareResults.end() &&
+                directStoreResults.find(inst.result->id) == directStoreResults.end()) {
                 LiveInterval interval;
                 interval.valueId = inst.result->id;
                 interval.start = instIndex;

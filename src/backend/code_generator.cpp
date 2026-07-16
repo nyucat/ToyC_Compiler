@@ -167,6 +167,64 @@ std::set<int> usedSavedRegsFromMapping(const RegMapping& regMap) {
     return regs;
 }
 
+FrameInfo compactFrame(
+    const toyc::ir::IRFunction& func,
+    const FrameInfo& oldFrame,
+    RegMapping& regMap,
+    const std::set<int>& usedSavedRegs
+) {
+    FrameInfo frame;
+    frame.isLeafFunction = oldFrame.isLeafFunction;
+    frame.hasCall = oldFrame.hasCall;
+    frame.outgoingArgBytes = oldFrame.outgoingArgBytes;
+    frame.stackSlotLimit = oldFrame.stackSlotLimit;
+    frame.usedSavedRegs = usedSavedRegs;
+
+    std::set<int> stackValueIds;
+    for (const auto& entry : regMap) {
+        if (!entry.second.isReg) {
+            stackValueIds.insert(entry.first);
+        }
+    }
+
+    int size = frame.outgoingArgBytes;
+    if (!frame.isLeafFunction) {
+        size += 4;
+    }
+    size += static_cast<int>(frame.usedSavedRegs.size() * 4);
+    size += static_cast<int>(stackValueIds.size() * 4);
+    frame.frameSize = (size + 15) & ~15;
+
+    int offset = frame.frameSize;
+    if (!frame.isLeafFunction) {
+        offset -= 4;
+        frame.raOffset = offset;
+    }
+
+    for (std::size_t i = 0; i < frame.usedSavedRegs.size(); ++i) {
+        offset -= 4;
+        frame.savedRegOffsets.push_back(offset);
+    }
+
+    for (int valueId : stackValueIds) {
+        offset -= 4;
+        regMap[valueId] = RegOrSlot::fromSlot(offset);
+        for (const auto& block : func.blocks) {
+            for (const auto& inst : block.instructions()) {
+                if (inst.op == toyc::ir::IROp::Alloca && inst.result.has_value() &&
+                    inst.result->id == valueId) {
+                    frame.localVarOffsets[valueId] = offset;
+                }
+            }
+        }
+        if (frame.localVarOffsets.find(valueId) == frame.localVarOffsets.end()) {
+            frame.spillOffsets.push_back(offset);
+        }
+    }
+
+    return frame;
+}
+
 } // namespace
 
 CodeGenerator::CodeGenerator(bool optimize) : optimize_(optimize) {}
@@ -207,6 +265,7 @@ void CodeGenerator::generateFunction(const toyc::ir::IRFunction& func, std::ostr
     if (optimize_) {
         frame = frameLayout.layout(func, optimize_, usedSavedRegsFromMapping(regMap));
         regMap = regAlloc.allocate(func, frame, optimize_);
+        frame = compactFrame(func, frame, regMap, usedSavedRegsFromMapping(regMap));
     }
 
     constValues_.clear();
