@@ -171,6 +171,173 @@ bool isTempReg(int reg) {
     return (reg >= Reg::T0 && reg <= Reg::T2) || (reg >= Reg::T3 && reg <= Reg::T6);
 }
 
+bool readsReg(const RISCVInstruction& inst, int reg) {
+    switch (inst.op) {
+    case RISCVOp::ADD:
+    case RISCVOp::SUB:
+    case RISCVOp::MUL:
+    case RISCVOp::DIV:
+    case RISCVOp::REM:
+    case RISCVOp::AND:
+    case RISCVOp::OR:
+    case RISCVOp::XOR:
+    case RISCVOp::SLL:
+    case RISCVOp::SRL:
+    case RISCVOp::SRA:
+    case RISCVOp::SLT:
+    case RISCVOp::SLTU:
+        return inst.operands.size() >= 3 &&
+               (inst.operands[1].regId == reg || inst.operands[2].regId == reg);
+    case RISCVOp::ADDI:
+    case RISCVOp::ANDI:
+    case RISCVOp::ORI:
+    case RISCVOp::XORI:
+    case RISCVOp::SLLI:
+    case RISCVOp::SRLI:
+    case RISCVOp::SRAI:
+    case RISCVOp::SLTI:
+    case RISCVOp::SLTIU:
+    case RISCVOp::MV:
+    case RISCVOp::NEG:
+    case RISCVOp::NOT:
+        return inst.operands.size() >= 2 && inst.operands[1].regId == reg;
+    case RISCVOp::BEQ:
+    case RISCVOp::BNE:
+    case RISCVOp::BLT:
+    case RISCVOp::BGE:
+    case RISCVOp::BLTU:
+    case RISCVOp::BGEU:
+        return inst.operands.size() >= 2 &&
+               (inst.operands[0].regId == reg || inst.operands[1].regId == reg);
+    case RISCVOp::SW:
+    case RISCVOp::SB:
+    case RISCVOp::SH:
+        return inst.operands.size() >= 3 &&
+               (inst.operands[0].regId == reg || inst.operands[2].regId == reg);
+    case RISCVOp::LW:
+    case RISCVOp::LB:
+    case RISCVOp::LH:
+    case RISCVOp::LBU:
+    case RISCVOp::LHU:
+        return inst.operands.size() >= 3 && inst.operands[2].regId == reg;
+    case RISCVOp::JALR:
+        return inst.operands.size() >= 2 && inst.operands[1].regId == reg;
+    default:
+        return false;
+    }
+}
+
+bool writesReg(const RISCVInstruction& inst, int reg) {
+    switch (inst.op) {
+    case RISCVOp::ADD:
+    case RISCVOp::ADDI:
+    case RISCVOp::SUB:
+    case RISCVOp::MUL:
+    case RISCVOp::DIV:
+    case RISCVOp::REM:
+    case RISCVOp::AND:
+    case RISCVOp::ANDI:
+    case RISCVOp::OR:
+    case RISCVOp::ORI:
+    case RISCVOp::XOR:
+    case RISCVOp::XORI:
+    case RISCVOp::SLL:
+    case RISCVOp::SLLI:
+    case RISCVOp::SRL:
+    case RISCVOp::SRLI:
+    case RISCVOp::SRA:
+    case RISCVOp::SRAI:
+    case RISCVOp::SLT:
+    case RISCVOp::SLTI:
+    case RISCVOp::SLTU:
+    case RISCVOp::SLTIU:
+    case RISCVOp::LW:
+    case RISCVOp::LB:
+    case RISCVOp::LH:
+    case RISCVOp::LBU:
+    case RISCVOp::LHU:
+    case RISCVOp::LUI:
+    case RISCVOp::AUIPC:
+    case RISCVOp::MV:
+    case RISCVOp::LI:
+    case RISCVOp::LA:
+    case RISCVOp::NEG:
+    case RISCVOp::NOT:
+    case RISCVOp::JAL:
+    case RISCVOp::JALR:
+        return !inst.operands.empty() && inst.operands[0].regId == reg;
+    case RISCVOp::CALL:
+        return reg == Reg::A0;
+    default:
+        return false;
+    }
+}
+
+bool regDeadBeforeNextWriteOrControl(const std::vector<RISCVInstruction>& insts, std::size_t start, int reg) {
+    for (std::size_t i = start; i < insts.size(); ++i) {
+        const RISCVInstruction& inst = insts[i];
+        if (readsReg(inst, reg)) {
+            return false;
+        }
+        if (writesReg(inst, reg)) {
+            return true;
+        }
+        if (inst.op == RISCVOp::LABEL || inst.isControlFlow()) {
+            return true;
+        }
+    }
+    return true;
+}
+
+bool isSavedReg(int reg) {
+    return reg >= Reg::S2 && reg <= Reg::S11;
+}
+
+std::vector<RISCVInstruction> removeUnusedSavedRegSaves(std::vector<RISCVInstruction> insts) {
+    std::set<std::pair<int, int>> savedSlots;
+    for (const RISCVInstruction& inst : insts) {
+        if (inst.op == RISCVOp::SW && inst.operands.size() >= 3 &&
+            inst.operands[0].type == RISCVOperand::Reg &&
+            inst.operands[1].type == RISCVOperand::Imm &&
+            inst.operands[2].type == RISCVOperand::Reg &&
+            inst.operands[2].regId == Reg::SP &&
+            isSavedReg(inst.operands[0].regId)) {
+            savedSlots.emplace(inst.operands[0].regId, inst.operands[1].immValue);
+        }
+    }
+
+    std::set<int> writtenSavedRegs;
+    for (const RISCVInstruction& inst : insts) {
+        if (inst.op == RISCVOp::LW && inst.operands.size() >= 3 &&
+            inst.operands[0].type == RISCVOperand::Reg &&
+            inst.operands[1].type == RISCVOperand::Imm &&
+            inst.operands[2].type == RISCVOperand::Reg &&
+            inst.operands[2].regId == Reg::SP &&
+            savedSlots.find({inst.operands[0].regId, inst.operands[1].immValue}) != savedSlots.end()) {
+            continue;
+        }
+        if (!inst.operands.empty() && inst.operands[0].type == RISCVOperand::Reg &&
+            isSavedReg(inst.operands[0].regId) && writesReg(inst, inst.operands[0].regId)) {
+            writtenSavedRegs.insert(inst.operands[0].regId);
+        }
+    }
+
+    std::vector<RISCVInstruction> out;
+    out.reserve(insts.size());
+    for (auto& inst : insts) {
+        if ((inst.op == RISCVOp::SW || inst.op == RISCVOp::LW) && inst.operands.size() >= 3 &&
+            inst.operands[0].type == RISCVOperand::Reg &&
+            inst.operands[2].type == RISCVOperand::Reg &&
+            inst.operands[2].regId == Reg::SP &&
+            isSavedReg(inst.operands[0].regId) &&
+            writtenSavedRegs.find(inst.operands[0].regId) == writtenSavedRegs.end()) {
+            continue;
+        }
+        out.push_back(std::move(inst));
+    }
+    return out;
+}
+
 std::vector<RISCVInstruction> peepholeOptimize(std::vector<RISCVInstruction> insts) {
     std::vector<RISCVInstruction> out;
     out.reserve(insts.size());
@@ -187,8 +354,23 @@ std::vector<RISCVInstruction> peepholeOptimize(std::vector<RISCVInstruction> ins
             isTempReg(inst.operands[0].regId) && i + 1 < insts.size()) {
             const RISCVInstruction& next = insts[i + 1];
             if (next.op == RISCVOp::MV && next.operands.size() >= 2 &&
-                next.operands[1].regId == inst.operands[0].regId) {
+                next.operands[1].regId == inst.operands[0].regId &&
+                regDeadBeforeNextWriteOrControl(insts, i + 2, inst.operands[0].regId)) {
                 out.push_back(RISCVInstruction::makeLI(next.operands[0].regId, inst.operands[1].immValue));
+                ++i;
+                continue;
+            }
+        }
+
+        if (inst.op == RISCVOp::MV && inst.operands.size() >= 2 &&
+            isTempReg(inst.operands[0].regId) && i + 1 < insts.size()) {
+            const RISCVInstruction& next = insts[i + 1];
+            if (next.op == RISCVOp::MV && next.operands.size() >= 2 &&
+                next.operands[1].regId == inst.operands[0].regId &&
+                regDeadBeforeNextWriteOrControl(insts, i + 2, inst.operands[0].regId)) {
+                if (next.operands[0].regId != inst.operands[1].regId) {
+                    out.push_back(RISCVInstruction::makeMV(next.operands[0].regId, inst.operands[1].regId));
+                }
                 ++i;
                 continue;
             }
@@ -211,7 +393,7 @@ std::vector<RISCVInstruction> peepholeOptimize(std::vector<RISCVInstruction> ins
         out.push_back(std::move(inst));
     }
 
-    return out;
+    return removeUnusedSavedRegSaves(std::move(out));
 }
 
 FrameInfo compactFrame(
