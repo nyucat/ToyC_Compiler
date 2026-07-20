@@ -1,0 +1,2 @@
+﻿int f(int f){ return f+1; }
+int main(){ return f(3); }
