@@ -9,36 +9,46 @@ RegMapping RegisterAllocator::allocateToStack(
     const FrameInfo& frame
 ) {
     RegMapping mapping;
-    int offset = frame.frameSize;
+    std::size_t spillIdx = 0;
 
-    offset -= static_cast<int>(frame.usedSavedRegs.size() * 4);
-
+    int dynamicOffset = frame.frameSize;
+    dynamicOffset -= static_cast<int>(frame.usedSavedRegs.size() * 4);
     if (!frame.isLeafFunction) {
-        offset -= 4;
+        dynamicOffset -= 4;
+    }
+    if (!frame.localVarOffsets.empty()) {
+        for (const auto& entry : frame.localVarOffsets) {
+            dynamicOffset = std::min(dynamicOffset, entry.second);
+        }
+    } else if (!frame.spillOffsets.empty()) {
+        dynamicOffset = frame.spillOffsets.back();
     }
 
-    if (!frame.localVarOffsets.empty()) {
-        int minLocalOffset = frame.frameSize;
-        for (const auto& entry : frame.localVarOffsets) {
-            minLocalOffset = std::min(minLocalOffset, entry.second);
+    auto assignTempSlot = [&](int valueId) {
+        if (spillIdx < frame.spillOffsets.size()) {
+            mapping[valueId] = RegOrSlot::fromSlot(frame.spillOffsets[spillIdx++]);
+            return;
         }
-        offset = minLocalOffset;
-    } else if (!frame.spillOffsets.empty()) {
-        offset = frame.spillOffsets.back();
-    }
+        dynamicOffset -= 4;
+        mapping[valueId] = RegOrSlot::fromSlot(dynamicOffset);
+    };
 
     for (const auto& block : func.blocks) {
         for (const auto& inst : block.instructions()) {
-            if (inst.result.has_value() && inst.result->id >= 0) {
-                if (inst.op == toyc::ir::IROp::Alloca) {
-                    if (frame.localVarOffsets.count(inst.result->id)) {
-                        mapping[inst.result->id] =
-                            RegOrSlot::fromSlot(frame.localVarOffsets.at(inst.result->id));
-                    }
-                } else if (mapping.find(inst.result->id) == mapping.end()) {
-                    offset -= 4;
-                    mapping[inst.result->id] = RegOrSlot::fromSlot(offset);
+            if (!inst.result.has_value() || inst.result->id < 0) {
+                continue;
+            }
+
+            if (inst.op == toyc::ir::IROp::Alloca) {
+                const auto localIt = frame.localVarOffsets.find(inst.result->id);
+                if (localIt != frame.localVarOffsets.end()) {
+                    mapping[inst.result->id] = RegOrSlot::fromSlot(localIt->second);
                 }
+                continue;
+            }
+
+            if (mapping.find(inst.result->id) == mapping.end()) {
+                assignTempSlot(inst.result->id);
             }
         }
     }
