@@ -316,9 +316,7 @@ std::vector<RISCVInstruction> CodeGenerator::translateInstruction(
                 int rs1 = getRegOrLoadToTmp(inst.operands[0].id, regMap, Reg::T0, result);
                 int rs2 = getRegOrLoadToTmp(inst.operands[1].id, regMap, Reg::T1, result);
                 result.push_back(RISCVInstruction::makeSUB(Reg::T2, rs1, rs2));
-                result.push_back(RISCVInstruction::makeSLTI(Reg::T2, Reg::T2, 1));
-                result.push_back(RISCVInstruction::makeSLTI(Reg::T3, Reg::ZERO, 0));
-                result.push_back(RISCVInstruction::makeXORI(Reg::T2, Reg::T2, 1));
+                result.push_back(RISCVInstruction::makeSLTIU(Reg::T2, Reg::T2, 1));
                 storeResult(inst.result->id, Reg::T2, regMap, result);
             }
             break;
