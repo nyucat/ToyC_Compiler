@@ -1,3 +1,4 @@
+#include "backend/code_generator.h"
 #include "frontend/parser.h"
 #include "ir/ir.h"
 #include "ir/ir_builder.h"
@@ -16,6 +17,15 @@ int expectContains(const std::string& text, const std::string& needle, const std
         return 0;
     }
     std::cout << "[FAIL] " << name << " missing: " << needle << '\n';
+    return 1;
+}
+
+int expectNotContains(const std::string& text, const std::string& needle, const std::string& name) {
+    if (text.find(needle) == std::string::npos) {
+        std::cout << "[PASS] " << name << '\n';
+        return 0;
+    }
+    std::cout << "[FAIL] " << name << " unexpected: " << needle << '\n';
     return 1;
 }
 
@@ -45,6 +55,33 @@ int runPipelineCase(const std::string& name, const std::string& source, bool opt
     return failures;
 }
 
+int runAssemblyCase(const std::string& name, const std::string& source, bool optimize) {
+    int failures = 0;
+    try {
+        auto program = toyc::frontend::parseProgram(source);
+
+        toyc::sema::SemanticAnalyzer analyzer;
+        (void)analyzer.analyze(*program);
+
+        toyc::ir::IRModule module;
+        toyc::ir::IRBuilder builder(module);
+        builder.buildCompUnit(*program);
+        toyc::optimizer::runOptimizationPipeline(module, optimize);
+
+        std::ostringstream out;
+        toyc::backend::CodeGenerator codegen(optimize);
+        codegen.generate(module, out);
+        const std::string text = out.str();
+
+        failures += expectContains(text, "sltiu", name + ".eq-uses-zero-test");
+        failures += expectNotContains(text, "xori t2, t2, 1", name + ".no-inverted-eq-result");
+    } catch (const std::exception& ex) {
+        std::cout << "[FAIL] " << name << " exception: " << ex.what() << '\n';
+        ++failures;
+    }
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -57,6 +94,9 @@ int main() {
     failures += runPipelineCase("pipeline-opt-fold",
                                 "int main() { return 2 + 3; }",
                                 true);
+    failures += runAssemblyCase("backend-icmp-eq-codegen",
+                                "int main() { return (2 + 3 == 5) + (2 + 3 != 4) + (1 == 0); }\n",
+                                false);
 
     if (failures == 0) {
         std::cout << "All A_B_C pipeline tests passed.\n";
