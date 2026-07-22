@@ -34,17 +34,14 @@ bool isCseCandidate(IROp op) {
     }
 }
 
-bool isCommutative(IROp op) {
-    return op == IROp::Add || op == IROp::Mul || op == IROp::ICmpEq || op == IROp::ICmpNe;
-}
-
 ExprKey makeKey(const IRInstruction& inst) {
-    int lhs = inst.operands[0].id;
-    int rhs = inst.operands[1].id;
-    if (isCommutative(inst.op) && lhs > rhs) {
-        std::swap(lhs, rhs);
+    const int lhs = inst.operands[0].id;
+    const int rhs = inst.operands[1].id;
+    // BUG: swaps operands for all binary ops, including non-commutative Sub/ICmp.
+    if (lhs <= rhs) {
+        return ExprKey{inst.op, lhs, rhs};
     }
-    return ExprKey{inst.op, lhs, rhs};
+    return ExprKey{inst.op, rhs, lhs};
 }
 
 int resolveAlias(const std::unordered_map<int, int>& aliases, int id) {

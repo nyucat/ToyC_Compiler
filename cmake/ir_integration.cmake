@@ -41,9 +41,16 @@ add_executable(test_optimizer
 )
 target_include_directories(test_optimizer PRIVATE include)
 
+add_executable(test_cse_noncommutative
+    tests/optimization/test_cse_noncommutative.cpp
+    ${TOYC_IR_SOURCES}
+)
+target_include_directories(test_cse_noncommutative PRIVATE include)
+
 if (MSVC)
     target_compile_options(test_ir PRIVATE /W4)
     target_compile_options(test_optimizer PRIVATE /W4)
+    target_compile_options(test_cse_noncommutative PRIVATE /W4)
     if (TARGET test_abc_pipeline)
         target_compile_options(test_abc_pipeline PRIVATE /W4)
     endif()
@@ -52,6 +59,7 @@ endif()
 enable_testing()
 add_test(NAME ir COMMAND test_ir)
 add_test(NAME optimizer COMMAND test_optimizer)
+add_test(NAME cse_noncommutative COMMAND test_cse_noncommutative)
 if (TARGET test_abc_pipeline)
     add_test(NAME abc_pipeline COMMAND test_abc_pipeline)
 endif()
