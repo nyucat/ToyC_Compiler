@@ -3,6 +3,7 @@
 #include "ir/basic_block.h"
 
 #include <map>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -43,6 +44,9 @@ void jumpThreading(IRFunction& function) {
     for (auto& block : function.blocks) {
         for (auto& inst : block.instructions()) {
             auto resolveTarget = [&](std::string label) {
+                if (label.empty()) {
+                    throw std::runtime_error("empty label in resolveTarget");
+                }
                 std::unordered_set<std::string> visited;
                 while (visited.insert(label).second) {
                     auto it = labels.find(label);
@@ -53,6 +57,9 @@ void jumpThreading(IRFunction& function) {
                     if (hop.op != IROp::Branch) {
                         return label;
                     }
+                    if (hop.label.empty()) {
+                        throw std::runtime_error("empty hop label in resolveTarget");
+                    }
                     label = hop.label;
                 }
                 return label;
@@ -60,6 +67,10 @@ void jumpThreading(IRFunction& function) {
 
             if (inst.op == IROp::Branch) {
                 inst.label = resolveTarget(inst.label);
+            }
+            if (inst.op == IROp::CondBranch) {
+                inst.trueLabel = resolveTarget(inst.trueLabel);
+                inst.falseLabel = resolveTarget(inst.falseLabel);
             }
         }
     }
@@ -98,10 +109,18 @@ void mergeBlocks(IRFunction& function) {
 
         for (auto& block : function.blocks) {
             for (auto& inst : block.instructions()) {
-                if (inst.op == IROp::Branch && inst.label == removedLabel) {
-                    inst.label = current.label();
+                if (inst.op == IROp::Branch) {
+                    if (inst.label.empty()) {
+                        throw std::runtime_error("empty branch target label");
+                    }
+                    if (inst.label == removedLabel) {
+                        inst.label = current.label();
+                    }
                 }
                 if (inst.op == IROp::CondBranch) {
+                    if (inst.trueLabel.empty() || inst.falseLabel.empty()) {
+                        throw std::runtime_error("empty cond branch target label");
+                    }
                     if (inst.trueLabel == removedLabel) {
                         inst.trueLabel = current.label();
                     }
