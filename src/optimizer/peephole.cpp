@@ -55,7 +55,10 @@ bool eliminateRedundantMoves(IRFunction& function) {
                     IRInstruction newMove;
                     newMove.op = IROp::Move;
                     newMove.result = inst.result;
-                    newMove.operands.push_back({lastMoveDst, inst.operands[0].type});
+                    IRValue value;
+                    value.id = lastMoveDst;
+                    value.type = inst.operands[0].type;
+                    newMove.operands.push_back(value);
                     optimized.push_back(std::move(newMove));
                     changed = true;
                     continue;

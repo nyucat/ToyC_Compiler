@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ir/ir.h"
+#include "ir/basic_block.h"
 
 namespace toyc::optimizer {
 
