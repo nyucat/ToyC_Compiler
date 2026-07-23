@@ -519,19 +519,19 @@ bool hoistLoopInvariants(IRFunction& function) {
             }
         }
 
-        BasicBlock* preheader = nullptr;
+        std::size_t preheaderIdx = static_cast<std::size_t>(-1);
         for (BasicBlock* pred : function.blocks[headerIdx].predecessors()) {
             const auto predIt = blockIndex.find(pred);
             if (predIt == blockIndex.end() || loopBlocks.count(predIt->second) > 0) {
                 continue;
             }
-            if (preheader != nullptr) {
-                preheader = nullptr;
+            if (preheaderIdx != static_cast<std::size_t>(-1)) {
+                preheaderIdx = static_cast<std::size_t>(-1);
                 break;
             }
-            preheader = pred;
+            preheaderIdx = predIt->second;
         }
-        if (preheader == nullptr) {
+        if (preheaderIdx == static_cast<std::size_t>(-1)) {
             continue;
         }
 
@@ -583,13 +583,17 @@ bool hoistLoopInvariants(IRFunction& function) {
         }
 
         if (!hoisted.empty()) {
-            auto& preheaderInsts = preheader->instructions();
+            auto& preheaderInsts = function.blocks[preheaderIdx].instructions();
             auto insertPos = preheaderInsts.end();
-            if (!preheaderInsts.empty() && preheader->terminator() != nullptr) {
+            if (!preheaderInsts.empty() && function.blocks[preheaderIdx].terminator() != nullptr) {
                 insertPos = preheaderInsts.end() - 1;
             }
             preheaderInsts.insert(insertPos, hoisted.begin(), hoisted.end());
             buildCFG(function);
+            blockIndex.clear();
+            for (std::size_t i = 0; i < function.blocks.size(); ++i) {
+                blockIndex.emplace(&function.blocks[i], i);
+            }
         }
     }
 

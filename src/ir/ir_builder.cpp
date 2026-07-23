@@ -346,7 +346,11 @@ IRValue IRBuilder::buildIdentifierExpr(const ast::IdentifierExprAST& expr) {
     const ast::Symbol* symbol = requireSymbol(expr.resolvedSymbol, "identifier " + expr.name());
 
     if (isConstSymbol(*symbol)) {
-        return emitConst(*getConstValue(*symbol));
+        auto constVal = getConstValue(*symbol);
+        if (constVal.has_value()) {
+            return emitConst(*constVal);
+        }
+        throw std::runtime_error("const symbol has no value: " + expr.name());
     }
 
     switch (symbol->kind) {

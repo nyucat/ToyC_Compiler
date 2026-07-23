@@ -687,7 +687,13 @@ void CodeGenerator::generateBasicBlock(
             if (nextInst.op == toyc::ir::IROp::CondBranch && !nextInst.operands.empty() &&
                 irInst.result.has_value() &&
                 nextInst.operands[0].id == irInst.result->id &&
-                irInst.operands.size() >= 2) {
+                irInst.operands.size() >= 2 &&
+                (irInst.op == toyc::ir::IROp::ICmpEq ||
+                 irInst.op == toyc::ir::IROp::ICmpNe ||
+                 irInst.op == toyc::ir::IROp::ICmpLt ||
+                 irInst.op == toyc::ir::IROp::ICmpLe ||
+                 irInst.op == toyc::ir::IROp::ICmpGt ||
+                 irInst.op == toyc::ir::IROp::ICmpGe)) {
                 const int rs1 = getRegOrLoadToTmp(irInst.operands[0].id, regMap, Reg::T3, insts);
                 const int rs2 = getRegOrLoadToTmp(irInst.operands[1].id, regMap, Reg::T4, insts);
                 const std::string trueLabel = localBlockLabel(nextInst.trueLabel);

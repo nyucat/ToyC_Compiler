@@ -100,32 +100,39 @@ void mergeBlocks(IRFunction& function) {
             continue;
         }
 
-        current.instructions().pop_back();
-        auto succInsts = succ->instructions();
-        current.instructions().insert(current.instructions().end(), succInsts.begin(), succInsts.end());
-
         const std::string removedLabel = succ->label();
-        function.blocks.erase(function.blocks.begin() + static_cast<std::ptrdiff_t>(i + 1));
+        const std::string keptLabel = current.label();
+
+        current.instructions().pop_back();
+        auto succInsts = std::move(succ->instructions());
+        current.instructions().insert(
+            current.instructions().end(),
+            std::make_move_iterator(succInsts.begin()),
+            std::make_move_iterator(succInsts.end())
+        );
+
+        auto succIt = std::find_if(
+            function.blocks.begin(),
+            function.blocks.end(),
+            [&](const BasicBlock& b) { return b.label() == removedLabel; }
+        );
+        if (succIt != function.blocks.end()) {
+            function.blocks.erase(succIt);
+        }
 
         for (auto& block : function.blocks) {
             for (auto& inst : block.instructions()) {
                 if (inst.op == IROp::Branch) {
-                    if (inst.label.empty()) {
-                        throw std::runtime_error("empty branch target label");
-                    }
                     if (inst.label == removedLabel) {
-                        inst.label = current.label();
+                        inst.label = keptLabel;
                     }
                 }
                 if (inst.op == IROp::CondBranch) {
-                    if (inst.trueLabel.empty() || inst.falseLabel.empty()) {
-                        throw std::runtime_error("empty cond branch target label");
-                    }
                     if (inst.trueLabel == removedLabel) {
-                        inst.trueLabel = current.label();
+                        inst.trueLabel = keptLabel;
                     }
                     if (inst.falseLabel == removedLabel) {
-                        inst.falseLabel = current.label();
+                        inst.falseLabel = keptLabel;
                     }
                 }
             }

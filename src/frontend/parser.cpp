@@ -1,5 +1,6 @@
 #include "frontend/parser.h"
 
+#include <cassert>
 #include <sstream>
 
 namespace toyc::frontend {
@@ -53,6 +54,7 @@ const Token& Parser::current() const {
 }
 
 const Token& Parser::previous() const {
+    assert(current_ > 0 && "no previous token");
     return tokens_[current_ - 1];
 }
 
@@ -209,7 +211,7 @@ std::unique_ptr<ast::StmtAST> Parser::parseStatement() {
         return std::make_unique<ast::ReturnStmtAST>(loc, std::move(value));
     }
 
-    if (check(TokenKind::Identifier) && tokens_[current_ + 1].kind == TokenKind::Assign) {
+    if (check(TokenKind::Identifier) && current_ + 1 < tokens_.size() && tokens_[current_ + 1].kind == TokenKind::Assign) {
         return parseStatementAfterIdentifier();
     }
 
