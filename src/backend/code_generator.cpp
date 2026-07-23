@@ -62,9 +62,6 @@ void emitSpAdjust(int delta, std::vector<RISCVInstruction>& insts) {
 }
 
 std::string localBlockLabel(const std::string& label) {
-    if (label.empty()) {
-        throw std::runtime_error("empty label passed to localBlockLabel");
-    }
     std::string out;
     for (char ch : label) {
         if (ch == '.') {

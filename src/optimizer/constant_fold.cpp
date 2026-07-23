@@ -93,6 +93,10 @@ void replaceWithConst(IRInstruction& inst, int value, std::unordered_map<int, in
     inst.op = IROp::Const;
     inst.immediate = value;
     inst.operands.clear();
+    inst.callee.clear();
+    inst.label.clear();
+    inst.trueLabel.clear();
+    inst.falseLabel.clear();
     if (inst.result.has_value()) {
         constants[inst.result->id] = value;
     }
@@ -137,6 +141,9 @@ void foldGlobalConstants(IRFunction& function, const IRModule& module) {
             inst.immediate = it->second;
             inst.callee.clear();
             inst.operands.clear();
+            inst.label.clear();
+            inst.trueLabel.clear();
+            inst.falseLabel.clear();
         }
     }
 }
@@ -162,6 +169,16 @@ void ConstantFoldPass::run(toyc::ir::IRModule& module) {
                 }
 
                 if (!inst.result.has_value()) {
+                    if (inst.op == IROp::CondBranch && !inst.operands.empty()) {
+                        auto condIt = constants.find(inst.operands[0].id);
+                        if (condIt != constants.end()) {
+                            IRInstruction branch;
+                            branch.op = IROp::Branch;
+                            branch.label = (condIt->second != 0) ? inst.trueLabel : inst.falseLabel;
+                            kept.push_back(std::move(branch));
+                            continue;
+                        }
+                    }
                     kept.push_back(std::move(inst));
                     continue;
                 }

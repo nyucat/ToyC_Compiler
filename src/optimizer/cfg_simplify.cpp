@@ -35,7 +35,7 @@ void jumpThreading(IRFunction& function) {
             continue;
         }
         const IRInstruction& nextTerm = nextIt->second->instructions().front();
-        if (nextTerm.op == IROp::Branch) {
+        if (nextTerm.op == IROp::Branch && !nextTerm.label.empty()) {
             term.label = nextTerm.label;
         }
     }
@@ -145,6 +145,7 @@ void CfgSimplifyPass::run(IRModule& module) {
     for (auto& function : module.functions) {
         copyPropagation(function);
         jumpThreading(function);
+        mergeBlocks(function);
     }
 }
 
