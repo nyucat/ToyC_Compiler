@@ -65,7 +65,7 @@ std::string localBlockLabel(const std::string& label) {
     if (label.empty()) {
         throw std::runtime_error("empty label passed to localBlockLabel");
     }
-    std::string out = ".L";
+    std::string out;
     for (char ch : label) {
         if (ch == '.') {
             out += '_';
