@@ -10,6 +10,7 @@ set(TOYC_IR_SOURCES
     src/optimizer/copy_prop.cpp
     src/optimizer/cse.cpp
     src/optimizer/cfg_simplify.cpp
+    src/optimizer/peephole.cpp
     src/optimizer/optimizer.cpp
 )
 

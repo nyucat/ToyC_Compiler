@@ -14,8 +14,10 @@ namespace {
 
 struct Options {
     bool optimize = false;
+    bool optimizeO2 = false;
     bool dumpAst = false;
     bool dumpIr = false;
+    bool verbose = false;
 };
 
 Options parseOptions(int argc, char** argv) {
@@ -24,10 +26,15 @@ Options parseOptions(int argc, char** argv) {
         const std::string arg = argv[i];
         if (arg == "-opt" || arg == "-O1" || arg == "-O") {
             options.optimize = true;
+        } else if (arg == "-O2") {
+            options.optimize = true;
+            options.optimizeO2 = true;
         } else if (arg == "--dump-ast") {
             options.dumpAst = true;
         } else if (arg == "--dump-ir") {
             options.dumpIr = true;
+        } else if (arg == "-v" || arg == "--verbose") {
+            options.verbose = true;
         } else {
             throw std::runtime_error("unknown argument: " + arg);
         }

@@ -1,0 +1,15 @@
+int global_counter = 0;
+
+int increment_global() {
+    global_counter = global_counter + 1;
+    return global_counter;
+}
+
+int main() {
+    int i = 0;
+    while (i < 1000) {
+        increment_global();
+        i = i + 1;
+    }
+    return global_counter;
+}

@@ -151,6 +151,11 @@ RegMapping RegisterAllocator::allocateWithRegisters(
         Reg::S7, Reg::S8, Reg::S9, Reg::S10, Reg::S11,
     };
 
+    static constexpr int kCallerSavedPool[] = {
+        Reg::T0, Reg::T1, Reg::T2, Reg::T3, Reg::T4, Reg::T5, Reg::T6,
+        Reg::A1, Reg::A2, Reg::A3, Reg::A4, Reg::A5, Reg::A6, Reg::A7,
+    };
+
     RegMapping mapping;
     fallback = false;
     std::size_t spillIdx = 0;
@@ -421,6 +426,10 @@ RegMapping RegisterAllocator::allocateWithRegisters(
     std::vector<int> freeRegs;
     for (std::size_t idx = savedPoolSize(); idx > savedIdx; --idx) {
         freeRegs.push_back(kSavedPool[idx - 1]);
+    }
+
+    for (int reg : kCallerSavedPool) {
+        freeRegs.push_back(reg);
     }
 
     std::vector<ActiveInterval> active;

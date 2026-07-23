@@ -5,6 +5,7 @@
 #include "optimizer/copy_prop.h"
 #include "optimizer/cse.h"
 #include "optimizer/dead_code.h"
+#include "optimizer/peephole.h"
 
 #include "ir/basic_block.h"
 
@@ -666,6 +667,8 @@ void runOptimizationPipeline(toyc::ir::IRModule& module, bool enableOpt) {
         cfgSimplify.run(module);
         deadCode.run(module);
     }
+
+    runPeepholeOptimizations(module);
 
     eliminateDeadFunctions(module);
 }
