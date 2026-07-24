@@ -102,6 +102,75 @@ int testShortCircuitAnd() {
     return failures;
 }
 
+int testLogicalOrNormalization() {
+    using namespace toyc;
+
+    ast::SourceLocation loc;
+    auto body = std::make_unique<ast::BlockAST>(loc);
+    auto lhs = std::make_unique<ast::NumberExprAST>(loc, 0);
+    auto rhs = std::make_unique<ast::NumberExprAST>(loc, 5);
+    auto logicalOr =
+        std::make_unique<ast::BinaryExprAST>(loc, "||", std::move(lhs), std::move(rhs));
+    body->addStatement(std::make_unique<ast::ReturnStmtAST>(loc, std::move(logicalOr)));
+
+    std::vector<std::unique_ptr<ast::ParamAST>> params;
+    auto mainFunc =
+        std::make_unique<ast::FuncDefAST>(loc, ast::ValueType::Int, "main", std::move(params), std::move(body));
+    testutil::SymbolTableBuilder symbols;
+    symbols.bindFunction(*mainFunc);
+
+    ast::CompUnitAST unit;
+    unit.addFunction(std::move(mainFunc));
+
+    ir::IRModule module;
+    ir::IRBuilder builder(module);
+    builder.buildCompUnit(unit);
+
+    std::ostringstream out;
+    ir::dumpIRModule(module, out);
+    const std::string text = out.str();
+
+    int failures = 0;
+    // C 语义：0 || 5 的结果应为 1，rhs 分支需把非零操作数规范为 0/1
+    failures += expectContains(text, "lor.rhs", "logical-or-normalize.rhs-block");
+    failures += expectContains(text, "icmp.ne", "logical-or-normalize.bool");
+    return failures;
+}
+
+int testLogicalAndNormalization() {
+    using namespace toyc;
+
+    ast::SourceLocation loc;
+    auto body = std::make_unique<ast::BlockAST>(loc);
+    auto lhs = std::make_unique<ast::NumberExprAST>(loc, 1);
+    auto rhs = std::make_unique<ast::NumberExprAST>(loc, 5);
+    auto logicalAnd =
+        std::make_unique<ast::BinaryExprAST>(loc, "&&", std::move(lhs), std::move(rhs));
+    body->addStatement(std::make_unique<ast::ReturnStmtAST>(loc, std::move(logicalAnd)));
+
+    std::vector<std::unique_ptr<ast::ParamAST>> params;
+    auto mainFunc =
+        std::make_unique<ast::FuncDefAST>(loc, ast::ValueType::Int, "main", std::move(params), std::move(body));
+    testutil::SymbolTableBuilder symbols;
+    symbols.bindFunction(*mainFunc);
+
+    ast::CompUnitAST unit;
+    unit.addFunction(std::move(mainFunc));
+
+    ir::IRModule module;
+    ir::IRBuilder builder(module);
+    builder.buildCompUnit(unit);
+
+    std::ostringstream out;
+    ir::dumpIRModule(module, out);
+    const std::string text = out.str();
+
+    int failures = 0;
+    failures += expectContains(text, "land.rhs", "logical-and-normalize.rhs-block");
+    failures += expectContains(text, "icmp.ne", "logical-and-normalize.bool");
+    return failures;
+}
+
 int testConstantFolding() {
     using namespace toyc;
 
@@ -140,6 +209,8 @@ int main() {
     int failures = 0;
     failures += testReturnConstant();
     failures += testShortCircuitAnd();
+    failures += testLogicalOrNormalization();
+    failures += testLogicalAndNormalization();
     failures += testConstantFolding();
 
     if (failures == 0) {
