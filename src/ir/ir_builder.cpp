@@ -373,7 +373,8 @@ IRValue IRBuilder::buildLogicalAnd(const ast::BinaryExprAST& expr) {
 
     setInsertPoint(rhsLabel);
     IRValue rhs = buildExpr(expr.rhs());
-    emitStore(rhs, slot);
+    IRValue normalized = emitBinary(IROp::ICmpNe, rhs, emitConst(0));
+    emitStore(normalized, slot);
     emitBranch(mergeLabel);
 
     setInsertPoint(falseLabel);
@@ -401,7 +402,8 @@ IRValue IRBuilder::buildLogicalOr(const ast::BinaryExprAST& expr) {
 
     setInsertPoint(rhsLabel);
     IRValue rhs = buildExpr(expr.rhs());
-    emitStore(rhs, slot);
+    IRValue normalized = emitBinary(IROp::ICmpNe, rhs, emitConst(0));
+    emitStore(normalized, slot);
     emitBranch(mergeLabel);
 
     setInsertPoint(mergeLabel);
